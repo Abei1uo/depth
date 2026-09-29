@@ -1,0 +1,70 @@
+// event.proto —— WebSocket 实时事件协议。
+//
+// MVP 现状：后端 pkg/ws 使用 JSON 信封 Envelope{type, payload}，
+//   type 为事件名字符串（send_message / new_message / msg_ack / sync ...）。
+// 本协议将「字符串事件名 + JSON 负载」重构为带 oneof 的强类型 Event：
+//   迁移时只需替换 ws 层的编解码（Encode/Decode），Hub 与业务层无需改动。
+// 兼容策略：Envelope 保留 type 字段用于灰度；新客户端可直接用 Event.kind。
+syntax = "proto3";
+
+package depth.v1;
+
+option go_package = "github.com/tss/depth/server/gen/pb;pb";
+
+import "depth/v1/message.proto";
+
+// SyncRequest 断线重连后按 last_seq 补拉增量（对应 ws "sync" 事件）。
+message SyncRequest {
+  string conversation_id = 1;
+  int64 last_seq = 2;
+}
+
+// SyncResult 补拉结果（对应 ws "sync_result"，复用消息列表下发）。
+message SyncResult {
+  repeated Message messages = 1;
+}
+
+// MarkRead 已读回执上报（Phase 2，对应 ws "mark_read"）。
+message MarkRead {
+  string conversation_id = 1;
+  int64 max_seq = 2;
+}
+
+// Typing 输入状态（Phase 2，对应 ws "typing"）。
+message Typing {
+  string conversation_id = 1;
+  bool typing = 2;
+}
+
+// PresenceUpdate 在线状态变更（对应 ws "presence_update"）。
+message PresenceUpdate {
+  string user_id = 1;
+  bool online = 2;
+  int64 last_seen = 3; // Unix 毫秒
+}
+
+// ErrorEvent 服务端错误通知（对应 ws "error"）。
+message ErrorEvent {
+  string code = 1;
+  string message = 2;
+  string related_client_msg_id = 3; // 若与某条发送消息相关
+}
+
+// Event 是所有 WS 上下行事件的统一封装。
+// 客户端上行：send_message / sync / mark_read / typing
+// 服务端下行：new_message / msg_ack / sync_result / presence_update / error
+message Event {
+  // 保留原始事件名以便与 JSON MVP 对齐（可选字段）。
+  string type = 1;
+  oneof kind {
+    SendInput send_message = 2; // C->S
+    SyncRequest sync = 3; // C->S
+    MarkRead mark_read = 4; // C->S
+    Typing typing = 5; // C->S
+    Message new_message = 6; // S->C
+    Ack msg_ack = 7; // S->C
+    SyncResult sync_result = 8; // S->C
+    PresenceUpdate presence_update = 9; // S->C
+    ErrorEvent error = 10; // S->C
+  }
+}

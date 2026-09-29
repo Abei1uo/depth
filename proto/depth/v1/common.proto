@@ -1,0 +1,32 @@
+// common.proto —— 跨领域共享的基础类型与约定。
+//
+// 设计说明：
+//   - 本文件是所有 depth.v1 协议的公共依赖。
+//   - 时间统一使用 int64 Unix 毫秒（与后端 message.Ack.Timestamp、
+//     ws.Encode 输出、前端 ChatMessage.timestamp 保持一致）。
+//   - ID 统一为字符串形式的 UUID（后端 uuid.NewString / gen_random_uuid()）。
+syntax = "proto3";
+
+package depth.v1;
+
+option go_package = "github.com/tss/depth/server/gen/pb;pb";
+
+// MessageType 消息正文类型。
+// 取值与后端 internal/message/model.go 的常量严格对应。
+enum MessageType {
+  MESSAGE_TYPE_TEXT = 0; // 文本
+  MESSAGE_TYPE_IMAGE = 1; // 图片
+  MESSAGE_TYPE_FILE = 2; // 文件
+  MESSAGE_TYPE_VOICE = 3; // 语音
+  MESSAGE_TYPE_SYS = 4; // 系统消息
+}
+
+// MessageContent 消息正文负载。
+// 对应后端 message.Content（JSON: type/text/media_url/thumb_url/size）。
+message MessageContent {
+  MessageType type = 1;
+  string text = 2;
+  string media_url = 3;
+  string thumb_url = 4;
+  int64 size = 5; // 字节数（媒体消息）
+}

@@ -1,0 +1,39 @@
+// message.proto —— 消息实体。
+//
+// 对应后端 internal/message/model.go 的 Message / SendInput / Ack。
+// 落库列见 migrations/0001_init.sql 的 messages 表。
+syntax = "proto3";
+
+package depth.v1;
+
+option go_package = "github.com/tss/depth/server/gen/pb;pb";
+
+import "depth/v1/common.proto";
+
+// Message 服务端落库后的完整消息实体。
+// JSON 字段映射：server_msg_id / client_msg_id / conversation_id /
+// sender_id / seq / content / timestamp。
+message Message {
+  string server_msg_id = 1; // 服务端生成 UUID
+  string client_msg_id = 2; // 客户端幂等 ID
+  string conversation_id = 3;
+  string sender_id = 4;
+  int64 seq = 5; // 会话内单调递增序号（Redis INCR 生成）
+  MessageContent content = 6;
+  int64 timestamp = 7; // Unix 毫秒
+}
+
+// SendInput 客户端发送消息的入参（对应 message.SendInput）。
+message SendInput {
+  string client_msg_id = 1;
+  string conversation_id = 2;
+  MessageContent content = 3;
+}
+
+// Ack 服务端回执给发送方的确认（对应 message.Ack）。
+message Ack {
+  string client_msg_id = 1;
+  string server_msg_id = 2;
+  int64 seq = 3;
+  int64 timestamp = 4; // Unix 毫秒
+}

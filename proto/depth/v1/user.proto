@@ -1,0 +1,66 @@
+// user.proto —— 用户实体与用户相关接口。
+//
+// 对应后端：
+//   - internal/user/repository.go 的 User 实体
+//   - internal/user/handler.go     GET /api/v1/users/me、GET /api/v1/users/search
+//   - internal/auth/handler.go     POST /api/v1/auth/{register,login,refresh}
+//   - internal/auth/service.go     TokenPair
+syntax = "proto3";
+
+package depth.v1;
+
+option go_package = "github.com/tss/depth/server/gen/pb;pb";
+
+import "google/protobuf/empty.proto";
+
+// User 核心用户实体（PasswordHash 绝不出现在协议中）。
+message User {
+  string id = 1;
+  string username = 2;
+  string nickname = 3;
+  string avatar_url = 4;
+  int64 created_at = 5; // Unix 毫秒
+}
+
+// AuthSession 登录/注册成功后返回的令牌与用户信息。
+// 对应后端 auth.TokenPair（JSON: access_token/refresh_token/expires_at/user）。
+message AuthSession {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_at = 3; // Unix 秒（后端 TokenPair.ExpiresAt 语义）
+  User user = 4;
+}
+
+message RegisterRequest {
+  string username = 1; // 3~64
+  string nickname = 2; // <=64
+  string password = 3; // 6~128
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message RefreshRequest {
+  string refresh_token = 1;
+}
+
+message SearchUsersRequest {
+  string q = 1; // 关键字
+  int32 limit = 2; // 默认 20，最大 50
+}
+
+message SearchUsersResponse {
+  repeated User users = 1;
+}
+
+// UserService 用户与认证相关的读/写接口。
+// MVP 由 gin HTTP 实现；保留 service 定义以便后续迁移 gRPC。
+service UserService {
+  rpc Me(google.protobuf.Empty) returns (User); // GET /users/me
+  rpc Search(SearchUsersRequest) returns (SearchUsersResponse); // GET /users/search
+  rpc Register(RegisterRequest) returns (AuthSession); // POST /auth/register
+  rpc Login(LoginRequest) returns (AuthSession); // POST /auth/login
+  rpc Refresh(RefreshRequest) returns (AuthSession); // POST /auth/refresh
+}

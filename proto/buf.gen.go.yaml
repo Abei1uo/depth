@@ -1,0 +1,16 @@
+# Buf 代码生成配置（v2）——Go 侧。
+# 需要本机安装 buf（见 docs/setup.md）。远程插件首次运行需联网。
+#   cd proto && buf generate --template buf.gen.go.yaml
+version: v2
+clean: true
+plugins:
+  # protobuf 消息代码
+  - remote: buf.build/protocolbuffers/go:v1.36.6
+    out: ../server/gen/pb
+    opt:
+      - paths=source_relative
+  # gRPC stub（为未来迁移 gRPC 预留；MVP 仍走 gin HTTP + coder/websocket）
+  - remote: buf.build/grpc/go:v1.5.1
+    out: ../server/gen/pb
+    opt:
+      - paths=source_relative

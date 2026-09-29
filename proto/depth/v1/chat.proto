@@ -1,0 +1,71 @@
+// chat.proto —— 会话（单聊/群聊）与成员。
+//
+// 对应后端：
+//   - internal/chat/repository.go Conversation 实体与建会话逻辑
+//   - internal/chat/handler.go     POST /conversations/{direct,group}
+//                                  GET /conversations、GET /conversations/:id/messages
+syntax = "proto3";
+
+package depth.v1;
+
+option go_package = "github.com/tss/depth/server/gen/pb;pb";
+
+import "depth/v1/message.proto";
+import "google/protobuf/empty.proto";
+
+// ConversationType 会话类型（对应 chat.TypeDirect/TypeGroup）。
+enum ConversationType {
+  CONVERSATION_TYPE_DIRECT = 0; // 单聊
+  CONVERSATION_TYPE_GROUP = 1; // 群聊
+}
+
+// MemberRole 成员角色（对应建群时 owner=2、普通=0）。
+enum MemberRole {
+  MEMBER_ROLE_MEMBER = 0; // 普通成员
+  MEMBER_ROLE_OWNER = 2; // 群主
+}
+
+// Conversation 会话实体。
+message Conversation {
+  string id = 1;
+  ConversationType type = 2;
+  string name = 3; // 群名（单聊为空）
+  string avatar_url = 4;
+  string owner_id = 5;
+  repeated string member_ids = 6; // 可选，摘要接口不回填
+}
+
+message CreateDirectRequest {
+  string peer_id = 1; // 对端用户 UUID
+}
+
+message CreateGroupRequest {
+  string name = 1; // <=128
+  repeated string member_ids = 2; // 至少 1 个，均为 UUID
+}
+
+message ConversationIdResponse {
+  string conversation_id = 1;
+}
+
+message ListConversationsResponse {
+  repeated Conversation conversations = 1;
+}
+
+message ListMessagesRequest {
+  string conversation_id = 1;
+  int64 before_seq = 2; // 0 表示从最新往前拉
+  int32 limit = 3; // 默认 30，最大 100
+}
+
+message ListMessagesResponse {
+  repeated Message messages = 1;
+}
+
+// ChatService 会话与历史消息接口。
+service ChatService {
+  rpc CreateDirect(CreateDirectRequest) returns (ConversationIdResponse);
+  rpc CreateGroup(CreateGroupRequest) returns (ConversationIdResponse);
+  rpc ListConversations(google.protobuf.Empty) returns (ListConversationsResponse);
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+}

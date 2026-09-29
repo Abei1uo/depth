@@ -1,0 +1,5 @@
+// 说明：Android/Gradle 国内镜像已在项目文件中直接配置
+// （android/build.gradle.kts 的 allprojects.repositories 与
+//   android/settings.gradle.kts 的 pluginManagement.repositories）。
+// 此 init 脚本保留为空操作，避免与项目仓库模式冲突。
+// 若需对其他项目全局启用镜像，可参考 scripts/gradle.init.gradle 的历史版本。

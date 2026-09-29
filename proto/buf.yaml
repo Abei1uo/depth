@@ -1,0 +1,14 @@
+# Buf 工作区配置（v2）。proto 源位于 depth/v1 下，作为跨端（Go / Dart）协议的唯一事实来源。
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # MVP 阶段允许 ENUM_VALUE_PREFIX 之外的简洁枚举命名，见各文件说明。
+    - ENUM_VALUE_PREFIX
+    - ENUM_ZERO_VALUE_SUFFIX
+breaking:
+  use:
+    - FILE
