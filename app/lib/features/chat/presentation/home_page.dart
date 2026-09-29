@@ -53,16 +53,59 @@ class HomePage extends ConsumerWidget {
                       child: Text((c.name.isNotEmpty ? c.name : 'C')[0]),
                     ),
                     title: Text(c.name.isEmpty ? '会话 ${c.id.substring(0, 6)}' : c.name),
+                    trailing: c.unread > 0
+                        ? Badge.count(count: c.unread)
+                        : null,
                     onTap: () => context.go('/chat/${c.id}'),
                   );
                 },
               ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _startNewChat(context, ref),
+        onPressed: () => _showCreateMenu(context, ref),
         child: const Icon(Icons.add),
       ),
     );
+  }
+
+  void _showCreateMenu(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.person_outline),
+              title: const Text('新建单聊'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _startNewChat(context, ref);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.group_add_outlined),
+              title: const Text('新建群聊'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _startNewGroup(context, ref);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _startNewGroup(BuildContext context, WidgetRef ref) async {
+    final created = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const _GroupCreateSheet(),
+    );
+    if (created != null && created.isNotEmpty && context.mounted) {
+      context.go('/chat/$created');
+    }
   }
 
   Future<void> _startNewChat(BuildContext context, WidgetRef ref) async {
@@ -190,6 +233,161 @@ class _UserSearchSheetState extends ConsumerState<_UserSearchSheet> {
                             );
                           },
                         ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+/// 新建群聊：输入群名 + 多选成员，创建后返回会话 ID。
+class _GroupCreateSheet extends ConsumerStatefulWidget {
+  const _GroupCreateSheet();
+
+  @override
+  ConsumerState<_GroupCreateSheet> createState() => _GroupCreateSheetState();
+}
+
+class _GroupCreateSheetState extends ConsumerState<_GroupCreateSheet> {
+  final _name = TextEditingController();
+  final _q = TextEditingController();
+  final Map<String, AppUser> _selected = <String, AppUser>{};
+  List<AppUser> _results = const [];
+  bool _loading = false;
+  bool _creating = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _q.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search() async {
+    final keyword = _q.text.trim();
+    if (keyword.isEmpty) return;
+    setState(() => _loading = true);
+    try {
+      final users = await ref.read(authRepositoryProvider).search(keyword);
+      setState(() {
+        _results = users;
+        _loading = false;
+      });
+    } catch (_) {
+      setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _create() async {
+    if (_selected.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请至少选择一位成员')));
+      return;
+    }
+    setState(() => _creating = true);
+    try {
+      final id = await ref.read(conversationsProvider.notifier).createGroup(
+            _name.text.trim(),
+            _selected.keys.toList(),
+          );
+      if (mounted) Navigator.of(context).pop(id);
+    } catch (_) {
+      setState(() => _creating = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('创建群聊失败')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: SafeArea(
+          child: SizedBox(
+            height: 520,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: TextField(
+                    controller: _name,
+                    decoration: const InputDecoration(
+                      labelText: '群名称',
+                      isDense: true,
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _q,
+                          onSubmitted: (_) => _search(),
+                          decoration: const InputDecoration(
+                            labelText: '搜索用户名添加成员',
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                          onPressed: _search, icon: const Icon(Icons.search)),
+                    ],
+                  ),
+                ),
+                if (_selected.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: _selected.values
+                          .map((u) => InputChip(
+                                label: Text(u.displayName),
+                                onDeleted: () =>
+                                    setState(() => _selected.remove(u.id)),
+                              ))
+                          .toList(),
+                    ),
+                  ),
+                const Divider(height: 1),
+                Expanded(
+                  child: _loading
+                      ? const Center(child: CircularProgressIndicator())
+                      : ListView.builder(
+                          itemCount: _results.length,
+                          itemBuilder: (context, i) {
+                            final u = _results[i];
+                            final checked = _selected.containsKey(u.id);
+                            return CheckboxListTile(
+                              value: checked,
+                              title: Text(u.displayName),
+                              subtitle: Text('@${u.username}'),
+                              controlAffinity: ListTileControlAffinity.leading,
+                              onChanged: (v) => setState(() {
+                                if (v ?? false) {
+                                  _selected[u.id] = u;
+                                } else {
+                                  _selected.remove(u.id);
+                                }
+                              }),
+                            );
+                          },
+                        ),
+                ),
+                SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: FilledButton(
+                      onPressed: _creating ? null : _create,
+                      child: Text(_creating ? '创建中…' : '创建群聊'),
+                    ),
+                  ),
                 ),
               ],
             ),

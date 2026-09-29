@@ -36,6 +36,29 @@ class ChatRepository {
     }
   }
 
+  /// POST /api/v1/conversations/group，返回会话 ID。
+  Future<String> createGroup(String name, List<String> memberIds) async {
+    try {
+      final resp = await _api.post<Map<String, dynamic>>(
+          '/conversations/group',
+          data: {'name': name, 'member_ids': memberIds});
+      return resp.data?['conversation_id'] as String? ?? '';
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
+  /// GET /api/v1/conversations/:id，返回会话详情与成员。
+  Future<ConversationDetail> detail(String conversationId) async {
+    try {
+      final resp = await _api
+          .get<Map<String, dynamic>>('/conversations/$conversationId');
+      return ConversationDetail.fromJson(resp.data ?? const <String, dynamic>{});
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
   /// GET /api/v1/conversations/:id/messages?before_seq=&limit=
   Future<List<ChatMessage>> history(
     String conversationId, {

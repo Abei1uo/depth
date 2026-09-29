@@ -88,6 +88,7 @@ func run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		gateway.EncodeMessage, log,
 	)
 	wsServer.SetMessageService(msgSvc)
+	wsServer.SetReadMarker(chatRepo)
 
 	// HTTP 处理器
 	userHandler := user.NewHandler(userRepo)

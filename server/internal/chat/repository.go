@@ -17,11 +17,12 @@ const (
 
 // Conversation 是会话实体。
 type Conversation struct {
-	ID        string `json:"id"`
-	Type      int16  `json:"type"`
-	Name      string `json:"name"`
-	AvatarURL string `json:"avatar_url"`
-	OwnerID   string `json:"owner_id"`
+	ID        string   `json:"id"`
+	Type      int16    `json:"type"`
+	Name      string   `json:"name"`
+	AvatarURL string   `json:"avatar_url"`
+	OwnerID   string   `json:"owner_id"`
+	Unread    int      `json:"unread"`
 	MemberIDs []string `json:"member_ids,omitempty"`
 }
 
@@ -110,6 +111,29 @@ func (r *Repository) CreateGroup(ctx context.Context, ownerID, name string, memb
 	return convID, nil
 }
 
+// PeerMembers 返回与 userID 处于同一会话的所有其他用户 ID（去重，不含自己）。
+// 用于上线/下线时向相关成员广播在线状态。
+func (r *Repository) PeerMembers(ctx context.Context, userID string) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT m2.user_id
+		FROM conversation_members m1
+		JOIN conversation_members m2 ON m2.conversation_id = m1.conversation_id
+		WHERE m1.user_id = $1 AND m2.user_id <> $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // Members 返回会话全部成员 ID。
 func (r *Repository) Members(ctx context.Context, convID string) ([]string, error) {
 	rows, err := r.pool.Query(ctx, `
@@ -129,12 +153,17 @@ func (r *Repository) Members(ctx context.Context, convID string) ([]string, erro
 	return out, rows.Err()
 }
 
-// ListForUser 返回用户参与的所有会话摘要。
+// ListForUser 返回用户参与的所有会话摘要（含未读数）。
 func (r *Repository) ListForUser(ctx context.Context, userID string) ([]*Conversation, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT c.id, c.type, COALESCE(c.name,''), COALESCE(c.avatar_url,''), COALESCE(c.owner_id::text,'')
+		SELECT c.id, c.type, COALESCE(c.name,''), COALESCE(c.avatar_url,''), COALESCE(c.owner_id::text,''),
+		       (SELECT COUNT(*) FROM messages msg
+		          WHERE msg.conversation_id = c.id
+		            AND msg.sender_id <> $1
+		            AND msg.seq > COALESCE(r.last_read_seq, 0))
 		FROM conversations c
 		JOIN conversation_members m ON m.conversation_id = c.id
+		LEFT JOIN conversation_reads r ON r.conversation_id = c.id AND r.user_id = m.user_id
 		WHERE m.user_id = $1
 		ORDER BY c.last_msg_at DESC NULLS LAST`, userID)
 	if err != nil {
@@ -144,10 +173,62 @@ func (r *Repository) ListForUser(ctx context.Context, userID string) ([]*Convers
 	var out []*Conversation
 	for rows.Next() {
 		var c Conversation
-		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID); err != nil {
+		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID, &c.Unread); err != nil {
 			return nil, err
 		}
 		out = append(out, &c)
 	}
 	return out, rows.Err()
+}
+
+// Member 会话成员（含用户展示信息）。
+type Member struct {
+	UserID    string `json:"user_id"`
+	Username  string `json:"username"`
+	Nickname  string `json:"nickname"`
+	AvatarURL string `json:"avatar_url"`
+	Role      int16  `json:"role"`
+}
+
+// Detail 返回单个会话及其成员列表。
+func (r *Repository) Detail(ctx context.Context, convID string) (*Conversation, []Member, error) {
+	var c Conversation
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, type, COALESCE(name,''), COALESCE(avatar_url,''), COALESCE(owner_id::text,'')
+		FROM conversations WHERE id = $1`, convID).Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT m.user_id, u.username, u.nickname, COALESCE(u.avatar_url,''), m.role
+		FROM conversation_members m
+		JOIN users u ON u.id = m.user_id
+		WHERE m.conversation_id = $1
+		ORDER BY m.role DESC, m.joined_at ASC`, convID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var members []Member
+	for rows.Next() {
+		var mb Member
+		if err := rows.Scan(&mb.UserID, &mb.Username, &mb.Nickname, &mb.AvatarURL, &mb.Role); err != nil {
+			return nil, nil, err
+		}
+		members = append(members, mb)
+		c.MemberIDs = append(c.MemberIDs, mb.UserID)
+	}
+	return &c, members, rows.Err()
+}
+
+// MarkRead 更新用户在某会话的已读游标（取较大值，幂等 upsert）。
+func (r *Repository) MarkRead(ctx context.Context, userID, convID string, maxSeq int64) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO conversation_reads (user_id, conversation_id, last_read_seq, updated_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (user_id, conversation_id) DO UPDATE
+		  SET last_read_seq = GREATEST(conversation_reads.last_read_seq, EXCLUDED.last_read_seq),
+		      updated_at    = now()`,
+		userID, convID, maxSeq)
+	return err
 }

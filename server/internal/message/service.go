@@ -118,6 +118,11 @@ func (s *Service) Deliver(ctx context.Context, m *Message, receivers []string, e
 	}
 }
 
+// Members 返回会话成员 ID（供上行如 typing 广播使用）。
+func (s *Service) Members(ctx context.Context, convID string) ([]string, error) {
+	return s.chat.Members(ctx, convID)
+}
+
 // History 返回某会话的历史消息。
 func (s *Service) History(ctx context.Context, convID string, beforeSeq int64, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 100 {

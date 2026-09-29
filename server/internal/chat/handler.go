@@ -1,10 +1,12 @@
 package chat
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/tss/depth/server/internal/message"
 	"github.com/tss/depth/server/pkg/middleware"
@@ -92,10 +94,26 @@ func (h *Handler) Messages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"messages": msgs})
 }
 
+// Get 处理 GET /api/v1/conversations/:id —— 返回会话详情与成员。
+func (h *Handler) Get(c *gin.Context) {
+	convID := c.Param("id")
+	conv, members, err := h.repo.Detail(c.Request.Context(), convID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话详情失败", "detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"conversation": conv, "members": members})
+}
+
 // RegisterRoutes 挂载到受保护的路由组。
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/conversations/direct", h.CreateDirect)
 	rg.POST("/conversations/group", h.CreateGroup)
 	rg.GET("/conversations", h.List)
+	rg.GET("/conversations/:id", h.Get)
 	rg.GET("/conversations/:id/messages", h.Messages)
 }

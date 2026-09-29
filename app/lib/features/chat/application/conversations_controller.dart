@@ -15,6 +15,14 @@ class ConversationsController extends AsyncNotifier<List<Conversation>> {
     ref.invalidateSelf();
     return id;
   }
+
+  /// 新建群聊，返回会话 ID 并刷新列表。
+  Future<String> createGroup(String name, List<String> memberIds) async {
+    final id =
+        await ref.read(chatRepositoryProvider).createGroup(name, memberIds);
+    ref.invalidateSelf();
+    return id;
+  }
 }
 
 final conversationsProvider =

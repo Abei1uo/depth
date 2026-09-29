@@ -18,12 +18,19 @@ import (
 	"github.com/tss/depth/server/pkg/ws"
 )
 
+// ReadMarker 提供已读游标写入与同会话其他成员查询（由 chat.Repository 实现）。
+type ReadMarker interface {
+	MarkRead(ctx context.Context, userID, convID string, maxSeq int64) error
+	PeerMembers(ctx context.Context, userID string) ([]string, error)
+}
+
 // WSServer 负责升级 HTTP 连接为 WebSocket 并接入 Hub。
 type WSServer struct {
 	hub       *ws.Hub
 	tokens    *auth.TokenManager
 	presence  *presence.Service
 	msgSvc    *message.Service
+	chatRead  ReadMarker
 	log       *slog.Logger
 	ping      time.Duration
 }
@@ -38,6 +45,9 @@ func NewWSServer(tokens *auth.TokenManager, presence *presence.Service, log *slo
 
 // SetMessageService 后置注入消息服务（打破循环依赖）。
 func (s *WSServer) SetMessageService(svc *message.Service) { s.msgSvc = svc }
+
+// SetReadMarker 后置注入已读写入依赖（由会话仓储实现）。
+func (s *WSServer) SetReadMarker(r ReadMarker) { s.chatRead = r }
 
 // Hub 暴露连接中心，供消息服务作为 Router 使用。
 func (s *WSServer) Hub() *ws.Hub { return s.hub }
@@ -72,9 +82,11 @@ func (s *WSServer) HandleConn(c *gin.Context) {
 	if err := s.presence.SetOnline(ctx, claims.UserID, deviceID); err != nil {
 		s.log.Warn("presence set online failed", "err", err.Error())
 	}
+	s.broadcastPresence(ctx, claims.UserID, true)
 
 	// ServeConn 阻塞至连接结束，随后清理在线状态。
 	s.hub.ServeConn(ctx, conn, claims.UserID, deviceID, s.ping)
+	s.broadcastPresence(context.Background(), claims.UserID, false)
 	if err := s.presence.SetOffline(context.Background(), claims.UserID, deviceID); err != nil {
 		s.log.Warn("presence set offline failed", "err", err.Error())
 	}
@@ -94,9 +106,9 @@ func (s *WSServer) dispatch(ctx context.Context, client *ws.Client, env *ws.Enve
 		}
 		return s.handleSync(ctx, client, env)
 	case ws.EventMarkRead:
-		return nil, nil // Phase 2 实现已读回执
+		return s.handleMarkRead(ctx, client, env)
 	case ws.EventTyping:
-		return nil, nil // Phase 2 实现输入状态
+		return s.handleTyping(ctx, client, env)
 	default:
 		return nil, errors.New("未知事件类型: " + env.Type)
 	}
@@ -137,6 +149,85 @@ func (s *WSServer) handleSync(ctx context.Context, client *ws.Client, env *ws.En
 	}
 	// 复用 new_message 事件批量下发补拉结果。
 	return ws.Encode("sync_result", gin.H{"messages": msgs})
+}
+
+func (s *WSServer) handleMarkRead(ctx context.Context, client *ws.Client, env *ws.Envelope) ([]byte, error) {
+	if s.chatRead == nil {
+		return nil, errors.New("已读服务尚未就绪")
+	}
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		MaxSeq         int64  `json:"max_seq"`
+	}
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		return nil, errors.New("mark_read 负载格式错误")
+	}
+	if req.ConversationID == "" {
+		return nil, nil
+	}
+	if err := s.chatRead.MarkRead(ctx, client.UserID(), req.ConversationID, req.MaxSeq); err != nil {
+		s.log.Warn("mark_read failed", "err", err.Error())
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (s *WSServer) handleTyping(ctx context.Context, client *ws.Client, env *ws.Envelope) ([]byte, error) {
+	if s.msgSvc == nil {
+		return nil, nil
+	}
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		Typing         bool   `json:"typing"`
+	}
+	if err := json.Unmarshal(env.Payload, &req); err != nil || req.ConversationID == "" {
+		return nil, nil
+	}
+	members, err := s.msgSvc.Members(ctx, req.ConversationID)
+	if err != nil {
+		return nil, nil
+	}
+	data, err := ws.Encode(ws.EventTyping, gin.H{
+		"conversation_id": req.ConversationID,
+		"from_user_id":    client.UserID(),
+		"typing":          req.Typing,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, uid := range members {
+		if uid == client.UserID() {
+			continue
+		}
+		if s.hub.IsOnline(uid) {
+			s.hub.SendToUser(uid, data)
+		}
+	}
+	return nil, nil
+}
+
+// broadcastPresence 向与 userID 共享会话的在线成员广播其上下线事件。
+func (s *WSServer) broadcastPresence(ctx context.Context, userID string, online bool) {
+	if s.chatRead == nil {
+		return
+	}
+	peers, err := s.chatRead.PeerMembers(ctx, userID)
+	if err != nil || len(peers) == 0 {
+		return
+	}
+	data, err := ws.Encode(ws.EventPresence, gin.H{
+		"user_id":   userID,
+		"online":    online,
+		"last_seen": time.Now().UnixMilli(),
+	})
+	if err != nil {
+		return
+	}
+	for _, uid := range peers {
+		if s.hub.IsOnline(uid) {
+			s.hub.SendToUser(uid, data)
+		}
+	}
 }
 
 // EncodeMessage 是消息下行编码器，供 message.Service 分发时调用。

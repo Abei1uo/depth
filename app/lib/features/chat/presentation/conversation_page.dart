@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/api/api_exception.dart';
+import '../../../core/presence/presence_controller.dart';
 import '../../../core/ws/ws_client.dart';
 import '../../../core/ws/ws_envelope.dart';
+import '../../../models/conversation.dart';
 import '../../../models/message.dart';
 import '../../auth/application/session_controller.dart';
+import '../application/conversations_controller.dart';
 import '../data/chat_repository.dart';
 
 /// 会话详情页：加载历史消息 + 通过 WebSocket 实时收发。
@@ -30,6 +33,15 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   bool _loading = true;
   bool _online = true;
   int _lastSeq = 0; // 本会话已知最大 seq，用于断线重连补拉
+  int? _oldestSeq; // 已加载的最早 seq，用于向更早分页
+  bool _loadingMore = false;
+  bool _hasMore = true;
+  bool _peerTyping = false; // 对方正在输入
+  Timer? _typingStop; // 本地停止输入后下发 typing=false
+  Timer? _typingExpire; // 远端 typing 自动过期
+  DateTime? _lastTypingSent;
+  ConversationDetail? _detail; // 会话详情（标题/成员/对方）
+  String? _peerId; // 单聊对方用户 ID
   String? _error;
   StreamSubscription<WsEnvelope>? _wsSub;
   StreamSubscription<bool>? _statusSub;
@@ -40,6 +52,8 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   void initState() {
     super.initState();
     _loadHistory();
+    _loadDetail();
+    _scroll.addListener(_onScroll);
     final client = ref.read(wsClientProvider);
     _online = client.isConnected;
     _wsSub = client.incoming.listen(_onIncoming);
@@ -54,11 +68,28 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
 
   @override
   void dispose() {
+    _scroll.removeListener(_onScroll);
     _wsSub?.cancel();
     _statusSub?.cancel();
     _input.dispose();
     _scroll.dispose();
+    _typingStop?.cancel();
+    _typingExpire?.cancel();
+    // 离开会话后刷新列表，以同步已读后的未读数。
+    ref.invalidate(conversationsProvider);
     super.dispose();
+  }
+
+  // 接近列表顶部时触发加载更早消息。
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    if (_scroll.position.pixels <= 60 &&
+        _hasMore &&
+        !_loadingMore &&
+        !_loading &&
+        _oldestSeq != null) {
+      _loadOlder();
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -74,12 +105,17 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
           ..clear()
           ..addAll(list);
         _lastSeq = 0;
+        _oldestSeq = null;
         for (final m in list) {
+          if (m.seq <= 0) continue;
           if (m.seq > _lastSeq) _lastSeq = m.seq;
+          if (_oldestSeq == null || m.seq < _oldestSeq!) _oldestSeq = m.seq;
         }
+        _hasMore = list.length >= 30;
         _loading = false;
       });
       _scrollToBottom();
+      _markRead();
     } on ApiException catch (e) {
       setState(() {
         _error = e.message;
@@ -93,6 +129,112 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     }
   }
 
+  /// 加载当前最早一页之前的更早消息，前插到列表顶部。
+  Future<void> _loadOlder() async {
+    final before = _oldestSeq;
+    if (before == null) return;
+    setState(() => _loadingMore = true);
+    try {
+      final older = await ref
+          .read(chatRepositoryProvider)
+          .history(widget.conversationId, beforeSeq: before, limit: 30);
+      setState(() {
+        if (older.isEmpty) {
+          _hasMore = false;
+        } else {
+          // 去重后前插（保持时间正序：更早 -> 当前顶部）。
+          final existing = _messages
+              .map((m) => m.serverMsgId)
+              .where((id) => id.isNotEmpty)
+              .toSet();
+          final fresh = older
+              .where((m) =>
+                  m.serverMsgId.isEmpty || !existing.contains(m.serverMsgId))
+              .toList();
+          _messages.insertAll(0, fresh);
+          for (final m in older) {
+            if (m.seq > 0 && (_oldestSeq == null || m.seq < _oldestSeq!)) {
+              _oldestSeq = m.seq;
+            }
+          }
+          _hasMore = older.length >= 30;
+        }
+        _loadingMore = false;
+      });
+    } catch (_) {
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  Future<void> _loadDetail() async {
+    try {
+      final d = await ref
+          .read(chatRepositoryProvider)
+          .detail(widget.conversationId);
+      if (!mounted) return;
+      setState(() {
+        _detail = d;
+        final peer = d.members.where((m) => m.userId != _meId).toList();
+        _peerId = peer.isEmpty ? null : peer.first.userId;
+      });
+    } catch (_) {
+      // 详情拉取失败不阻断聊天。
+    }
+  }
+
+  String get _titleText {
+    final d = _detail;
+    if (d == null) return '会话';
+    if (d.conversation.isGroup) {
+      return d.conversation.name.isEmpty ? '群聊' : d.conversation.name;
+    }
+    final peers = d.members.where((m) => m.userId != _meId).toList();
+    if (peers.isEmpty) return '聊天';
+    final name = peers.first.displayName;
+    return name.isEmpty ? '聊天' : name;
+  }
+
+  void _showMembers() {
+    final d = _detail;
+    if (d == null) return;
+    final online = ref.read(presenceProvider);
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('成员', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            const Divider(height: 1),
+            ...d.members.map(
+              (m) => ListTile(
+                leading: CircleAvatar(
+                  child: Text(m.displayName.characters.first),
+                ),
+                title: Text(m.displayName),
+                subtitle: Text('@${m.username}'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (online.contains(m.userId))
+                      const Icon(Icons.circle, size: 10, color: Colors.green),
+                    if (m.role == 2)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 6),
+                        child: Chip(label: Text('群主'), visualDensity: VisualDensity.compact),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _onIncoming(WsEnvelope env) {
     switch (env.type) {
       case WsEvents.newMessage:
@@ -101,6 +243,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
         if (_appendMessage(m)) {
           if (m.seq > _lastSeq) _lastSeq = m.seq;
           _scrollToBottom();
+          _markRead();
         }
         break;
       case WsEvents.msgAck:
@@ -136,7 +279,22 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
             appended = true;
           }
         }
-        if (appended) _scrollToBottom();
+        if (appended) {
+          _scrollToBottom();
+          _markRead();
+        }
+        break;
+      case WsEvents.typing:
+        if (env.payload['conversation_id'] != widget.conversationId) break;
+        if (env.payload['from_user_id'] == _meId) break;
+        final on = env.payload['typing'] == true;
+        setState(() => _peerTyping = on);
+        _typingExpire?.cancel();
+        if (on) {
+          _typingExpire = Timer(const Duration(seconds: 6), () {
+            if (mounted) setState(() => _peerTyping = false);
+          });
+        }
         break;
       default:
         break;
@@ -159,6 +317,41 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
           payload: <String, dynamic>{
             'conversation_id': widget.conversationId,
             'last_seq': _lastSeq,
+          },
+        ));
+  }
+
+  /// 上报已读：将本会话已知最大 seq 作为已读游标（仅在在线时）。
+  void _markRead() {
+    if (_lastSeq <= 0 || !_online) return;
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.markRead,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'max_seq': _lastSeq,
+          },
+        ));
+  }
+
+  /// 输入变化时节流下发 typing=true，静默 4s 后下发 false。
+  void _notifyTyping() {
+    final now = DateTime.now();
+    if (_lastTypingSent == null ||
+        now.difference(_lastTypingSent!) > const Duration(seconds: 2)) {
+      _lastTypingSent = now;
+      _sendTyping(true);
+    }
+    _typingStop?.cancel();
+    _typingStop = Timer(const Duration(seconds: 4), () => _sendTyping(false));
+  }
+
+  void _sendTyping(bool on) {
+    if (!_online) return;
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.typing,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'typing': on,
           },
         ));
   }
@@ -208,8 +401,29 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
 
   @override
   Widget build(BuildContext context) {
+    final peerOnline =
+        _peerId != null && ref.watch(presenceProvider).contains(_peerId);
     return Scaffold(
-      appBar: AppBar(title: const Text('会话')),
+      appBar: AppBar(
+        title: Text(_titleText),
+        actions: [
+          if (_peerId != null)
+            IconButton(
+              tooltip: peerOnline ? '对方在线' : '对方离线',
+              icon: Icon(
+                peerOnline ? Icons.circle : Icons.circle_outlined,
+                color: peerOnline ? Colors.green : Colors.grey,
+                size: 16,
+              ),
+              onPressed: null,
+            ),
+          IconButton(
+            tooltip: '成员',
+            icon: const Icon(Icons.people_outline),
+            onPressed: _detail == null ? null : _showMembers,
+          ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
@@ -233,13 +447,43 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                           : ListView.builder(
                               controller: _scroll,
                               padding: const EdgeInsets.all(12),
-                              itemCount: _messages.length,
-                              itemBuilder: (context, i) => _Bubble(
-                                  message: _messages[i],
-                                  isMe: _messages[i].senderId == _meId),
+                              itemCount: _messages.length + 1,
+                              itemBuilder: (context, i) {
+                                if (i == 0) {
+                                  return _loadingMore
+                                      ? const Padding(
+                                          padding: EdgeInsets.symmetric(
+                                              vertical: 8),
+                                          child: Center(
+                                            child: SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2),
+                                            ),
+                                          ),
+                                        )
+                                      : const SizedBox(height: 8);
+                                }
+                                final m = _messages[i - 1];
+                                return _Bubble(
+                                    message: m, isMe: m.senderId == _meId);
+                              },
                             ),
                     ),
-                    _InputBar(controller: _input, onSend: _send),
+                    if (_peerTyping)
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+                          child: Text('对方正在输入…',
+                              style: TextStyle(fontSize: 12)),
+                        ),
+                      ),
+                    _InputBar(
+                        controller: _input,
+                        onSend: _send,
+                        onChanged: _notifyTyping),
                   ],
                 ),
     );
@@ -301,10 +545,11 @@ class _Bubble extends StatelessWidget {
 }
 
 class _InputBar extends StatelessWidget {
-  const _InputBar({required this.controller, required this.onSend});
+  const _InputBar({required this.controller, required this.onSend, this.onChanged});
 
   final TextEditingController controller;
   final VoidCallback onSend;
+  final VoidCallback? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -319,6 +564,7 @@ class _InputBar extends StatelessWidget {
                 minLines: 1,
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
+                onChanged: (_) => onChanged?.call(),
                 onSubmitted: (_) => onSend(),
                 decoration: const InputDecoration(
                   hintText: '输入消息…',
