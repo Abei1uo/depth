@@ -1,9 +1,10 @@
 # Buf 代码生成配置（v2）——Dart 侧。
-# 前置：dart pub global activate protoc_plugin （会安装 protoc-gen-dart 到 PATH）。
+# 前置：dart pub global activate protoc_plugin（安装 protoc-gen-dart），
+# 并确保其所在 bin 目录（%LOCALAPPDATA%\Pub\Cache\bin）在 PATH 上。
 #   cd proto && buf generate --template buf.gen.dart.yaml
 # 生成产物写入 app/lib/gen/pb，供 Flutter 客户端引用。
 version: v2
 clean: true
 plugins:
-  - name: dart # 调用 PATH 上的 protoc-gen-dart
+  - local: protoc-gen-dart
     out: ../app/lib/gen/pb

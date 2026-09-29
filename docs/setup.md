@@ -279,15 +279,24 @@ MVP 后端仍走 JSON 信封，proto 是**权威契约**，代码生成按需执
    buf lint
    buf breaking --against '.git#ref=HEAD'
    ```
-3. 生成 Go 代码（输出到 `server/gen/pb`）：
+3. 生成 Go 代码（输出到 `server/gen/pb`），随后补依赖：
    ```powershell
+   cd d:\workspace\tss\depth\proto
    buf generate --template buf.gen.go.yaml
+   cd ..\server; go mod tidy   # 拉齐 google.golang.org/protobuf 与 grpc
    ```
-4. 生成 Dart 代码（输出到 `app/lib/gen/pb`）——需先装插件：
+4. 生成 Dart 代码（输出到 `app/lib/gen/pb`）——需先装插件并将其 bin 加入 PATH：
    ```powershell
    dart pub global activate protoc_plugin
+   $env:PATH += ";$env:LOCALAPPDATA\Pub\Cache\bin"   # protoc-gen-dart 所在目录
+   cd d:\workspace\tss\depth\proto
    buf generate --template buf.gen.dart.yaml
+   cd ..\app; flutter pub add protobuf fixnum          # 生成代码的运行时依赖
    ```
+   生成的 `lib/gen/pb/**` 已在 `analysis_options.yaml` 排除出 lint。
+
+> 详见 [proto.md](./proto.md)：proto=权威契约，当前传输仍为 JSON，未把二进制 protobuf 接入运行链路。
+> 注：`buf.gen.dart.yaml` 用 v2 的 `local: protoc-gen-dart`（旧写法 `name:` 在 v2 无效）。
 
 ---
 

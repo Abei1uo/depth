@@ -6,9 +6,13 @@ lint:
   use:
     - STANDARD
   except:
-    # MVP 阶段允许 ENUM_VALUE_PREFIX 之外的简洁枚举命名，见各文件说明。
+    # MVP 阶段允许简洁的枚举命名与共享的 RPC 请求/响应类型：
+    # 这些 service 仅作为跨端契约，实际传输走 JSON，不启用生成的 gRPC 桩。
     - ENUM_VALUE_PREFIX
     - ENUM_ZERO_VALUE_SUFFIX
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
 breaking:
   use:
     - FILE
