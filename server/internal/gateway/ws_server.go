@@ -131,7 +131,7 @@ func (s *WSServer) handleSync(ctx context.Context, client *ws.Client, env *ws.En
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		return nil, errors.New("sync 负载格式错误")
 	}
-	msgs, err := s.msgSvc.History(ctx, req.ConversationID, req.LastSeq+1, 100)
+	msgs, err := s.msgSvc.HistoryAfter(ctx, req.ConversationID, req.LastSeq, 100)
 	if err != nil {
 		return nil, err
 	}

@@ -125,3 +125,11 @@ func (s *Service) History(ctx context.Context, convID string, beforeSeq int64, l
 	}
 	return s.repo.List(ctx, convID, beforeSeq, limit)
 }
+
+// HistoryAfter 返回某会话 seq 大于 afterSeq 的消息（用于断线重连补拉）。
+func (s *Service) HistoryAfter(ctx context.Context, convID string, afterSeq int64, limit int) ([]*Message, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	return s.repo.ListAfter(ctx, convID, afterSeq, limit)
+}

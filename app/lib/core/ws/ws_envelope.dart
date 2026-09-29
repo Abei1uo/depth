@@ -37,5 +37,6 @@ class WsEvents {
   static const String msgAck = 'msg_ack';
   static const String msgRead = 'msg_read';
   static const String presenceUpdate = 'presence_update';
+  static const String syncResult = 'sync_result';
   static const String error = 'error';
 }

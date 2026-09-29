@@ -29,6 +29,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   final List<ChatMessage> _messages = <ChatMessage>[];
   bool _loading = true;
   bool _online = true;
+  int _lastSeq = 0; // 本会话已知最大 seq，用于断线重连补拉
   String? _error;
   StreamSubscription<WsEnvelope>? _wsSub;
   StreamSubscription<bool>? _statusSub;
@@ -43,7 +44,11 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     _online = client.isConnected;
     _wsSub = client.incoming.listen(_onIncoming);
     _statusSub = client.status.listen((v) {
-      if (mounted) setState(() => _online = v);
+      if (!mounted) return;
+      final wasOffline = !_online;
+      setState(() => _online = v);
+      // 由断线恢复到在线：按 last_seq 补拉。
+      if (v && wasOffline && !_loading) _requestSync();
     });
   }
 
@@ -68,6 +73,10 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
         _messages
           ..clear()
           ..addAll(list);
+        _lastSeq = 0;
+        for (final m in list) {
+          if (m.seq > _lastSeq) _lastSeq = m.seq;
+        }
         _loading = false;
       });
       _scrollToBottom();
@@ -89,11 +98,10 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       case WsEvents.newMessage:
         final m = ChatMessage.fromJson(env.payload);
         if (m.conversationId != widget.conversationId) return;
-        final dup = _messages.any((x) =>
-            m.serverMsgId.isNotEmpty && x.serverMsgId == m.serverMsgId);
-        if (dup) return;
-        setState(() => _messages.add(m));
-        _scrollToBottom();
+        if (_appendMessage(m)) {
+          if (m.seq > _lastSeq) _lastSeq = m.seq;
+          _scrollToBottom();
+        }
         break;
       case WsEvents.msgAck:
         final ack = MessageAck.fromJson(env.payload);
@@ -112,11 +120,47 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
               createdAt: old.createdAt,
             );
           });
+          if (ack.seq > _lastSeq) _lastSeq = ack.seq;
         }
+        break;
+      case WsEvents.syncResult:
+        final raw = env.payload['messages'];
+        if (raw is! List) return;
+        var appended = false;
+        for (final item in raw) {
+          if (item is! Map<String, dynamic>) continue;
+          final m = ChatMessage.fromJson(item);
+          if (m.conversationId != widget.conversationId) continue;
+          if (_appendMessage(m)) {
+            if (m.seq > _lastSeq) _lastSeq = m.seq;
+            appended = true;
+          }
+        }
+        if (appended) _scrollToBottom();
         break;
       default:
         break;
     }
+  }
+
+  /// 去重追加一条消息（按 server_msg_id）；返回是否新增。
+  bool _appendMessage(ChatMessage m) {
+    final dup = _messages.any((x) =>
+        m.serverMsgId.isNotEmpty && x.serverMsgId == m.serverMsgId);
+    if (dup) return false;
+    setState(() => _messages.add(m));
+    return true;
+  }
+
+  /// 断线重连后向服务端按 last_seq 补拉。
+  void _requestSync() {
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.sync,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'last_seq': _lastSeq,
+          },
+        ));
   }
 
   void _send() {

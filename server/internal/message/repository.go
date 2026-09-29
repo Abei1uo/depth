@@ -85,3 +85,46 @@ func (r *Repository) List(ctx context.Context, convID string, beforeSeq int64, l
 	}
 	return out, nil
 }
+
+// ListAfter 拉取某会话 seq 大于 afterSeq 的消息（升序，用于断线重连补拉）。
+func (r *Repository) ListAfter(ctx context.Context, convID string, afterSeq int64, limit int) ([]*Message, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, conversation_id, sender_id, seq, type, content, media_url, created_at
+		FROM messages
+		WHERE conversation_id = $1 AND seq > $2
+		ORDER BY seq ASC
+		LIMIT $3`, convID, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*Message
+	for rows.Next() {
+		var (
+			id, conv, sender string
+			seq              int64
+			typ              int16
+			content          []byte
+			mediaURL         *string
+			createdAt        time.Time
+		)
+		if err := rows.Scan(&id, &conv, &sender, &seq, &typ, &content, &mediaURL, &createdAt); err != nil {
+			return nil, err
+		}
+		var c Content
+		_ = json.Unmarshal(content, &c)
+		c.Type = typ
+		if mediaURL != nil {
+			c.MediaURL = *mediaURL
+		}
+		out = append(out, &Message{
+			ID: id, ConversationID: conv, SenderID: sender, Seq: seq,
+			Content: c, CreatedAt: createdAt,
+		})
+	}
+	return out, rows.Err()
+}
