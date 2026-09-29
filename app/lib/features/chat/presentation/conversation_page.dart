@@ -45,12 +45,15 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   String? _error;
   StreamSubscription<WsEnvelope>? _wsSub;
   StreamSubscription<bool>? _statusSub;
+  // 在 initState 捕获会话列表控制器，以便在 dispose 中安全刷新（避免用失效的 ref）。
+  ConversationsController? _conversations;
 
   String get _meId => ref.read(sessionControllerProvider).user?.id ?? '';
 
   @override
   void initState() {
     super.initState();
+    _conversations = ref.read(conversationsProvider.notifier);
     _loadHistory();
     _loadDetail();
     _scroll.addListener(_onScroll);
@@ -76,7 +79,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     _typingStop?.cancel();
     _typingExpire?.cancel();
     // 离开会话后刷新列表，以同步已读后的未读数。
-    ref.invalidate(conversationsProvider);
+    _conversations?.reload();
     super.dispose();
   }
 

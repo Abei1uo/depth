@@ -1,6 +1,7 @@
 package user
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -41,6 +42,7 @@ func (h *Handler) Search(c *gin.Context) {
 	}
 	users, err := h.repo.Search(c.Request.Context(), q, limit)
 	if err != nil {
+		slog.Error("user search failed", "q", q, "err", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索失败"})
 		return
 	}

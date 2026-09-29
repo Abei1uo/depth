@@ -123,7 +123,21 @@ pwsh -File d:\workspace\tss\depth\scripts\init_db.ps1
 > ```
 > 之后重跑迁移即可。
 
-### 3.3 手动执行迁移（可选）
+### 3.3 应用全部迁移（幂等，可重复跑）
+
+`server/migrations/` 下按序号存放迁移（`0001_init.sql`、`0002_add_reads.sql` …），
+脚本会按文件名升序依次执行，SQL 自身用 `CREATE ... IF NOT EXISTS`，可安全重复运行：
+
+```powershell
+pwsh -File d:\workspace\tss\depth\scripts\migrate.ps1
+# 需要连别的库/psql 路径时：
+# pwsh -File scripts\migrate.ps1 -Dsn 'postgresql://im:im@localhost:5432/im?sslmode=disable' -Psql 'D:\PostgreSQL\18\bin\psql.exe'
+```
+
+> 说明：`init_db.ps1` 负责「建角色 + 建库」并只执行首个 `0001`；此后新增的迁移
+> （如 `0002`）请用 `migrate.ps1` 补跑，它覆盖 `migrations/` 下的**全部** `.sql`。
+
+手动执行单条迁移也可：
 
 ```powershell
 & 'D:\PostgreSQL\18\bin\psql.exe' 'postgresql://im:im@localhost:5432/im?sslmode=disable' `

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -81,6 +82,7 @@ func respondAuthError(c *gin.Context, err error) {
 	case ErrInvalidCred, ErrInvalidToken:
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 	default:
+		slog.Error("unhandled auth error", "err", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 	}
 }

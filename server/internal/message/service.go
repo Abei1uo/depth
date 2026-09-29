@@ -28,13 +28,13 @@ type PushEnqueuer interface {
 
 // Service 编排消息写入与分发。
 type Service struct {
-	repo    *Repository
-	chat    MemberLister
-	hub     Router
-	push    PushEnqueuer
-	rdb     *redis.Client
-	encode  func(*Message) ([]byte, error) // 出站编码（可替换为 Protobuf）
-	log     *slog.Logger
+	repo   *Repository
+	chat   MemberLister
+	hub    Router
+	push   PushEnqueuer
+	rdb    *redis.Client
+	encode func(*Message) ([]byte, error) // 出站编码（可替换为 Protobuf）
+	log    *slog.Logger
 }
 
 // NewService 构造消息服务。encode 将消息编码为下行字节。

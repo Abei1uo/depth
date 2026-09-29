@@ -23,6 +23,10 @@ class ConversationsController extends AsyncNotifier<List<Conversation>> {
     ref.invalidateSelf();
     return id;
   }
+
+  /// 重新拉取会话列表。供详情页在离开（dispose）时刷新未读角标，
+  /// 避免在 widget 的 dispose 中直接使用已失效的 `ref`。
+  void reload() => ref.invalidateSelf();
 }
 
 final conversationsProvider =

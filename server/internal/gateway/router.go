@@ -15,13 +15,13 @@ import (
 
 // RouterDeps 是构建 HTTP 路由所需的依赖集合。
 type RouterDeps struct {
-	Cfg        *config.Config
-	Log        *slog.Logger
-	Auth       *auth.Handler
-	Users      *user.Handler
-	Chats      *chat.Handler
-	Tokens     *auth.TokenManager
-	WSServer   *WSServer
+	Cfg          *config.Config
+	Log          *slog.Logger
+	Auth         *auth.Handler
+	Users        *user.Handler
+	Chats        *chat.Handler
+	Tokens       *auth.TokenManager
+	WSServer     *WSServer
 	PingInterval time.Duration
 }
 

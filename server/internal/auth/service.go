@@ -21,17 +21,17 @@ var (
 
 // TokenPair 返回给客户端的令牌组合。
 type TokenPair struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresAt    int64  `json:"expires_at"` // Unix 秒
+	AccessToken  string     `json:"access_token"`
+	RefreshToken string     `json:"refresh_token"`
+	ExpiresAt    int64      `json:"expires_at"` // Unix 秒
 	User         *user.User `json:"user"`
 }
 
 // Service 编排认证用例。
 type Service struct {
-	users  *user.Repository
-	tokens *TokenManager
-	rdb    *redis.Client
+	users      *user.Repository
+	tokens     *TokenManager
+	rdb        *redis.Client
 	refreshTTL time.Duration
 }
 

@@ -26,13 +26,13 @@ type ReadMarker interface {
 
 // WSServer 负责升级 HTTP 连接为 WebSocket 并接入 Hub。
 type WSServer struct {
-	hub       *ws.Hub
-	tokens    *auth.TokenManager
-	presence  *presence.Service
-	msgSvc    *message.Service
-	chatRead  ReadMarker
-	log       *slog.Logger
-	ping      time.Duration
+	hub      *ws.Hub
+	tokens   *auth.TokenManager
+	presence *presence.Service
+	msgSvc   *message.Service
+	chatRead ReadMarker
+	log      *slog.Logger
+	ping     time.Duration
 }
 
 // NewWSServer 构造 WebSocket 服务端。为避免与消息服务的构造循环依赖，

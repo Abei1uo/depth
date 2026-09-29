@@ -450,6 +450,156 @@ func TestConversationDetailAndGroup(t *testing.T) {
 	}
 }
 
+// fetchMessages 拉取某会话历史（GET /conversations/:id/messages），返回 seq 升序列表。
+func fetchMessages(t *testing.T, token, convID string, beforeSeq int64, limit int) []int64 {
+	t.Helper()
+	q := fmt.Sprintf("/api/v1/conversations/%s/messages?limit=%d", convID, limit)
+	if beforeSeq > 0 {
+		q += fmt.Sprintf("&before_seq=%d", beforeSeq)
+	}
+	var res struct {
+		Messages []struct {
+			Seq     int64 `json:"seq"`
+			Content struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if code := doJSON(t, http.MethodGet, q, token, nil, &res); code != http.StatusOK {
+		t.Fatalf("history got %d", code)
+	}
+	out := make([]int64, 0, len(res.Messages))
+	for _, m := range res.Messages {
+		out = append(out, m.Seq)
+	}
+	return out
+}
+
+// TestHistoryPagination 验证：上滑分页返回更旧的消息，且不重叠、时间正序。
+func TestHistoryPagination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+
+	tokenA, _ := register(t, "hpA")
+	_, idB := register(t, "hpB")
+
+	var conv struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/direct", tokenA,
+		map[string]any{"peer_id": idB}, &conv); code != http.StatusOK {
+		t.Fatalf("create direct got %d", code)
+	}
+
+	wsA, _, err := websocket.Dial(ctx, wsURL()+"?token="+tokenA, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wsA.CloseNow()
+	const total = 5
+	for i := 0; i < total; i++ {
+		cid := fmt.Sprintf("hp-%d-%s", i, randStr())
+		payload, _ := json.Marshal(map[string]any{
+			"client_msg_id":   cid,
+			"conversation_id": conv.ConversationID,
+			"content":         map[string]any{"type": 0, "text": fmt.Sprintf("m%d", i)},
+		})
+		if err := wsA.Write(ctx, websocket.MessageText, marshalEnvelope(t, "send_message", payload)); err != nil {
+			t.Fatal(err)
+		}
+		if !waitFor(t, wsA, func(p map[string]any) bool {
+			return p["client_msg_id"] == cid && asInt64(p["seq"]) > 0
+		}, 8*time.Second) {
+			t.Fatalf("A 未收到第 %d 条的 msg_ack", i)
+		}
+	}
+
+	// 第一页：最近 2 条 -> seq [4,5]（正序）。
+	page1 := fetchMessages(t, tokenA, conv.ConversationID, 0, 2)
+	if len(page1) != 2 || page1[0] >= page1[1] {
+		t.Fatalf("page1 期望 2 条正序, 实际 %v", page1)
+	}
+	// 第二页：before_seq=page1 最小 seq -> 更旧的 [2,3]，且与 page1 无重叠。
+	page2 := fetchMessages(t, tokenA, conv.ConversationID, page1[0], 2)
+	if len(page2) != 2 || page2[0] >= page2[1] {
+		t.Fatalf("page2 期望 2 条正序, 实际 %v", page2)
+	}
+	if page2[1] >= page1[0] {
+		t.Fatalf("分页重叠/错序: page2=%v page1=%v", page2, page1)
+	}
+}
+
+// TestConversationOrdering 验证：会话列表按最近消息时间倒序（新消息的会话置顶）。
+func TestConversationOrdering(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+
+	tokenA, _ := register(t, "ordA")
+	_, idB := register(t, "ordB")
+	_, idC := register(t, "ordC")
+
+	mk := func(peer string) string {
+		var c struct {
+			ConversationID string `json:"conversation_id"`
+		}
+		if code := doJSON(t, http.MethodPost, "/api/v1/conversations/direct", tokenA,
+			map[string]any{"peer_id": peer}, &c); code != http.StatusOK {
+			t.Fatalf("create direct got %d", code)
+		}
+		return c.ConversationID
+	}
+	convB := mk(idB)
+	convC := mk(idC)
+
+	wsA, _, err := websocket.Dial(ctx, wsURL()+"?token="+tokenA, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wsA.CloseNow()
+
+	send := func(convID, tag string) {
+		cid := tag + "-" + randStr()
+		payload, _ := json.Marshal(map[string]any{
+			"client_msg_id":   cid,
+			"conversation_id": convID,
+			"content":         map[string]any{"type": 0, "text": tag},
+		})
+		if err := wsA.Write(ctx, websocket.MessageText, marshalEnvelope(t, "send_message", payload)); err != nil {
+			t.Fatal(err)
+		}
+		if !waitFor(t, wsA, func(p map[string]any) bool {
+			return p["client_msg_id"] == cid && asInt64(p["seq"]) > 0
+		}, 8*time.Second) {
+			t.Fatalf("未收到 %s 的 msg_ack", tag)
+		}
+	}
+
+	send(convB, "first")
+	time.Sleep(1200 * time.Millisecond) // 拉开 last_msg_at，确保排序可判
+	send(convC, "second")
+
+	var res struct {
+		Conversations []struct {
+			ID string `json:"id"`
+		} `json:"conversations"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations", tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("list got %d", code)
+	}
+	if len(res.Conversations) < 2 {
+		t.Fatalf("期望至少 2 个会话, 实际 %d", len(res.Conversations))
+	}
+	if res.Conversations[0].ID != convC {
+		t.Fatalf("最近活动的会话应置顶: got %s want %s", res.Conversations[0].ID, convC)
+	}
+}
+
 func marshalEnvelope(t *testing.T, typ string, payload json.RawMessage) []byte {
 	t.Helper()
 	b, err := json.Marshal(envelope{Type: typ, Payload: payload})

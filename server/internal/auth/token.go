@@ -85,7 +85,7 @@ func (tm *TokenManager) SignAccessToken(userID, username string) (string, time.T
 			NotBefore: jwt.NewNumericDate(now),
 		},
 	}
-	return tm.sign(claims) , exp, nil
+	return tm.sign(claims), exp, nil
 }
 
 func (tm *TokenManager) sign(claims Claims) string {

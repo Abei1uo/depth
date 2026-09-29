@@ -2,6 +2,7 @@ package chat
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -14,8 +15,8 @@ import (
 
 // Handler 提供会话相关的 HTTP 接口。
 type Handler struct {
-	repo    *Repository
-	msgSvc  *message.Service
+	repo   *Repository
+	msgSvc *message.Service
 }
 
 // NewHandler 构造会话处理器。
@@ -42,6 +43,7 @@ func (h *Handler) CreateDirect(c *gin.Context) {
 	uid := middleware.CtxUserID(c)
 	convID, err := h.repo.CreateDirect(c.Request.Context(), uid, req.PeerID)
 	if err != nil {
+		slog.Error("create direct failed", "user", uid, "peer", req.PeerID, "err", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建会话失败"})
 		return
 	}
@@ -58,6 +60,7 @@ func (h *Handler) CreateGroup(c *gin.Context) {
 	uid := middleware.CtxUserID(c)
 	convID, err := h.repo.CreateGroup(c.Request.Context(), uid, req.Name, req.MemberIDs)
 	if err != nil {
+		slog.Error("create group failed", "user", uid, "name", req.Name, "err", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建群聊失败"})
 		return
 	}
@@ -69,6 +72,7 @@ func (h *Handler) List(c *gin.Context) {
 	uid := middleware.CtxUserID(c)
 	convs, err := h.repo.ListForUser(c.Request.Context(), uid)
 	if err != nil {
+		slog.Error("list conversations failed", "user", uid, "err", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
 		return
 	}
@@ -88,6 +92,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	}
 	msgs, err := h.msgSvc.History(c.Request.Context(), convID, beforeSeq, limit)
 	if err != nil {
+		slog.Error("list history failed", "conv", convID, "err", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取历史消息失败"})
 		return
 	}
@@ -103,7 +108,8 @@ func (h *Handler) Get(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话详情失败", "detail": err.Error()})
+		slog.Error("get conversation detail failed", "conv", convID, "err", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话详情失败"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"conversation": conv, "members": members})

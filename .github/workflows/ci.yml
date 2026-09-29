@@ -1,0 +1,73 @@
+# 骨架 CI：契约校验 + 后端构建/静态检查 + 客户端分析/测试。
+# 集成测试（-tags=integration）需要真实 PG/Redis，这里默认不跑，留待自托管 runner。
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proto:
+    name: buf lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ github.token }}
+      - name: Lint
+        working-directory: proto
+        run: buf lint
+      # 破坏式变更检查（需要有基线分支时启用）：
+      # - name: Breaking check
+      #   working-directory: proto
+      #   run: buf breaking --against 'https://github.com/${{ github.repository }}.git#branch=master,subdir=proto'
+
+  server:
+    name: Go build & vet
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Gofmt check
+        run: test -z "$(gofmt -l .)" || (echo '需要 gofmt：' && gofmt -l . && exit 1)
+      - name: Unit test
+        run: go test ./...
+
+  app:
+    name: Flutter analyze & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4 # web_socket_channel 等无额外原生依赖，保留占位可选
+        with:
+          node-version: "20"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Pub get
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze
+      - name: Test
+        run: flutter test
