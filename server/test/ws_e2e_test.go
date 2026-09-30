@@ -601,6 +601,203 @@ func TestConversationOrdering(t *testing.T) {
 	}
 }
 
+// ---- Phase B: 群管理与会话偏好 ----
+
+type convRow struct {
+	ID     string `json:"id"`
+	Pinned bool   `json:"pinned"`
+	Muted  bool   `json:"muted"`
+	Unread int    `json:"unread"`
+}
+
+func listConvs(t *testing.T, token string) []convRow {
+	t.Helper()
+	var res struct {
+		Conversations []convRow `json:"conversations"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations", token, nil, &res); code != http.StatusOK {
+		t.Fatalf("list got %d", code)
+	}
+	return res.Conversations
+}
+
+func convIndex(list []convRow, id string) int {
+	for i, r := range list {
+		if r.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func createDirect(t *testing.T, token, peer string) string {
+	t.Helper()
+	var c struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/direct", token,
+		map[string]any{"peer_id": peer}, &c); code != http.StatusOK {
+		t.Fatalf("create direct got %d", code)
+	}
+	return c.ConversationID
+}
+
+func detailNameCount(t *testing.T, token, convID string) (string, int) {
+	t.Helper()
+	var d struct {
+		Conversation struct {
+			Name string `json:"name"`
+		} `json:"conversation"`
+		Members []struct {
+			UserID string `json:"user_id"`
+		} `json:"members"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+convID, token, nil, &d); code != http.StatusOK {
+		t.Fatalf("detail got %d", code)
+	}
+	return d.Conversation.Name, len(d.Members)
+}
+
+// sendText 用 token 连 WS 向 convID 发一条文本并等 ack（返回时服务端已同步处理）。
+func sendText(t *testing.T, token, convID, text string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, wsURL()+"?token="+token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.CloseNow()
+	cid := "pf-" + randStr()
+	payload, _ := json.Marshal(map[string]any{
+		"client_msg_id":   cid,
+		"conversation_id": convID,
+		"content":         map[string]any{"type": 0, "text": text},
+	})
+	if err := ws.Write(ctx, websocket.MessageText, marshalEnvelope(t, "send_message", payload)); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(t, ws, func(p map[string]any) bool {
+		return p["client_msg_id"] == cid && asInt64(p["seq"]) > 0
+	}, 8*time.Second) {
+		t.Fatalf("send_text 未收到 ack conv=%s", convID)
+	}
+}
+
+// TestGroupManagement 验证：改名(仅群主)/加成员/踢成员/退群。
+func TestGroupManagement(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	tokenA, idA := register(t, "gmA")
+	tokenB, idB := register(t, "gmB")
+	tokenC, idC := register(t, "gmC")
+	_, idD := register(t, "gmD")
+	_ = idA
+
+	var g struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/group", tokenA,
+		map[string]any{"name": "初始群", "member_ids": []string{idB, idC}}, &g); code != http.StatusOK {
+		t.Fatalf("create group got %d", code)
+	}
+	conv := g.ConversationID
+	if _, n := detailNameCount(t, tokenA, conv); n != 3 {
+		t.Fatalf("建群后期望 3 成员，实际 %d", n)
+	}
+
+	// owner 改名
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/rename", tokenA,
+		map[string]any{"name": "新群名"}, nil); code != http.StatusOK {
+		t.Fatalf("rename got %d", code)
+	}
+	if nm, _ := detailNameCount(t, tokenA, conv); nm != "新群名" {
+		t.Fatalf("改名未生效: %q", nm)
+	}
+	// 非群主改名 -> 403
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/rename", tokenB,
+		map[string]any{"name": "x"}, nil); code != http.StatusForbidden {
+		t.Fatalf("非群主改名期望 403，实际 %d", code)
+	}
+	// 加 D
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/members/add", tokenA,
+		map[string]any{"user_ids": []string{idD}}, nil); code != http.StatusOK {
+		t.Fatalf("add member got %d", code)
+	}
+	if _, n := detailNameCount(t, tokenA, conv); n != 4 {
+		t.Fatalf("加人后期望 4 成员，实际 %d", n)
+	}
+	// 踢 B
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/members/remove", tokenA,
+		map[string]any{"user_id": idB}, nil); code != http.StatusOK {
+		t.Fatalf("remove member got %d", code)
+	}
+	if _, n := detailNameCount(t, tokenA, conv); n != 3 {
+		t.Fatalf("踢人后期望 3 成员，实际 %d", n)
+	}
+	// C 退群
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/leave", tokenC, nil, nil); code != http.StatusOK {
+		t.Fatalf("leave got %d", code)
+	}
+	if _, n := detailNameCount(t, tokenA, conv); n != 2 {
+		t.Fatalf("C 退群后期望 2 成员，实际 %d", n)
+	}
+}
+
+// TestConversationPrefs 验证：置顶优先排序、免打扰标记、软删除与来新消息自动解除。
+func TestConversationPrefs(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	tokenA, _ := register(t, "pfA")
+	tokenB, idB := register(t, "pfB")
+	_, idC := register(t, "pfC")
+
+	convB := createDirect(t, tokenA, idB)
+	convC := createDirect(t, tokenA, idC)
+
+	// 置顶 convB
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+convB+"/pin", tokenA,
+		map[string]any{"pinned": true}, nil); code != http.StatusOK {
+		t.Fatalf("pin got %d", code)
+	}
+	// 使 convC 成为最新（发一条）
+	sendText(t, tokenA, convC, "newest")
+
+	list := listConvs(t, tokenA)
+	iB, iC := convIndex(list, convB), convIndex(list, convC)
+	if iB < 0 || iC < 0 {
+		t.Fatalf("列表缺会话 B=%d C=%d", iB, iC)
+	}
+	if iB > iC {
+		t.Fatalf("置顶会话应排在更新会话之前: B=%d C=%d", iB, iC)
+	}
+
+	// 免打扰 convC
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+convC+"/mute", tokenA,
+		map[string]any{"muted": true}, nil); code != http.StatusOK {
+		t.Fatalf("mute got %d", code)
+	}
+	if r := listConvs(t, tokenA); convIndex(r, convC) >= 0 && !r[convIndex(r, convC)].Muted {
+		t.Fatalf("convC 应标记为已免打扰")
+	}
+
+	// 软删除 convB -> 从列表消失
+	if code := doJSON(t, http.MethodDelete, "/api/v1/conversations/"+convB, tokenA, nil, nil); code != http.StatusOK {
+		t.Fatalf("hide got %d", code)
+	}
+	if convIndex(listConvs(t, tokenA), convB) >= 0 {
+		t.Fatalf("隐藏后 convB 不应在列表")
+	}
+
+	// 对端 B 发新消息 -> 解除隐藏
+	sendText(t, tokenB, convB, "wake")
+	if convIndex(listConvs(t, tokenA), convB) < 0 {
+		t.Fatalf("收到新消息后 convB 应重新出现在列表")
+	}
+}
+
 func marshalEnvelope(t *testing.T, typ string, payload json.RawMessage) []byte {
 	t.Helper()
 	b, err := json.Marshal(envelope{Type: typ, Payload: payload})

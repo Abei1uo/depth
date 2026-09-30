@@ -122,4 +122,130 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/conversations", h.List)
 	rg.GET("/conversations/:id", h.Get)
 	rg.GET("/conversations/:id/messages", h.Messages)
+
+	rg.POST("/conversations/:id/rename", h.Rename)
+	rg.POST("/conversations/:id/members/add", h.AddMembers)
+	rg.POST("/conversations/:id/members/remove", h.RemoveMember)
+	rg.POST("/conversations/:id/leave", h.Leave)
+	rg.POST("/conversations/:id/pin", h.Pin)
+	rg.POST("/conversations/:id/mute", h.Mute)
+	rg.DELETE("/conversations/:id", h.Hide)
+}
+
+// respondConvErr 统一处理群管理错误：ErrForbidden 403，其余记日得 500。
+func respondConvErr(c *gin.Context, err error, fallback string) {
+	if errors.Is(err, ErrForbidden) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "需要群主权限"})
+		return
+	}
+	slog.Error(fallback, "conv", c.Param("id"), "err", err.Error())
+	c.JSON(http.StatusInternalServerError, gin.H{"error": fallback})
+}
+
+type renameReq struct {
+	Name string `json:"name" binding:"required,max=128"`
+}
+
+type addMembersReq struct {
+	UserIDs []string `json:"user_ids" binding:"required,min=1,dive,uuid"`
+}
+
+type removeMemberReq struct {
+	UserID string `json:"user_id" binding:"required,uuid"`
+}
+
+type pinReq struct {
+	Pinned bool `json:"pinned"`
+}
+
+type muteReq struct {
+	Muted bool `json:"muted"`
+}
+
+// Rename 处理 POST /conversations/:id/rename。
+func (h *Handler) Rename(c *gin.Context) {
+	var req renameReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.repo.Rename(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.Name); err != nil {
+		respondConvErr(c, err, "改名失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// AddMembers 处理 POST /conversations/:id/members/add。
+func (h *Handler) AddMembers(c *gin.Context) {
+	var req addMembersReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.repo.AddMembers(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.UserIDs); err != nil {
+		respondConvErr(c, err, "添加成员失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// RemoveMember 处理 POST /conversations/:id/members/remove。
+func (h *Handler) RemoveMember(c *gin.Context) {
+	var req removeMemberReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.repo.RemoveMember(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.UserID); err != nil {
+		respondConvErr(c, err, "移除成员失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// Leave 处理 POST /conversations/:id/leave。
+func (h *Handler) Leave(c *gin.Context) {
+	if err := h.repo.Leave(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c)); err != nil {
+		respondConvErr(c, err, "退出会话失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// Pin 处理 POST /conversations/:id/pin。
+func (h *Handler) Pin(c *gin.Context) {
+	var req pinReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.repo.SetPin(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.Pinned); err != nil {
+		respondConvErr(c, err, "置顶设置失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// Mute 处理 POST /conversations/:id/mute。
+func (h *Handler) Mute(c *gin.Context) {
+	var req muteReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.repo.SetMute(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.Muted); err != nil {
+		respondConvErr(c, err, "免打扰设置失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// Hide 处理 DELETE /conversations/:id（从我的列表软删除）。
+func (h *Handler) Hide(c *gin.Context) {
+	if err := h.repo.Hide(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c)); err != nil {
+		respondConvErr(c, err, "删除会话失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

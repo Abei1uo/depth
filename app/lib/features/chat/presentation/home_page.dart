@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../models/user.dart';
+import '../../../models/conversation.dart';
 import '../../../core/ws/ws_client.dart';
 import '../../auth/application/session_controller.dart';
 import '../../auth/data/auth_repository.dart';
@@ -52,11 +53,36 @@ class HomePage extends ConsumerWidget {
                     leading: CircleAvatar(
                       child: Text((c.name.isNotEmpty ? c.name : 'C')[0]),
                     ),
-                    title: Text(c.name.isEmpty ? '会话 ${c.id.substring(0, 6)}' : c.name),
-                    trailing: c.unread > 0
-                        ? Badge.count(count: c.unread)
-                        : null,
+                    title: Row(
+                      children: [
+                        if (c.pinned) ...[
+                          const Icon(Icons.push_pin, size: 14),
+                          const SizedBox(width: 4),
+                        ],
+                        Expanded(
+                          child: Text(
+                            c.name.isEmpty
+                                ? '会话 ${c.id.substring(0, 6)}'
+                                : c.name,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (c.muted)
+                          const Icon(Icons.notifications_off_outlined,
+                              size: 16),
+                        if (c.unread > 0) ...[
+                          const SizedBox(width: 4),
+                          Badge.count(count: c.unread),
+                        ],
+                      ],
+                    ),
                     onTap: () => context.go('/chat/${c.id}'),
+                    onLongPress: () => _showConvMenu(context, ref, c),
                   );
                 },
               ),
@@ -89,6 +115,48 @@ class HomePage extends ConsumerWidget {
               onTap: () {
                 Navigator.of(ctx).pop();
                 _startNewGroup(context, ref);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showConvMenu(BuildContext context, WidgetRef ref, Conversation c) {
+    final notifier = ref.read(conversationsProvider.notifier);
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(c.pinned
+                  ? Icons.push_pin
+                  : Icons.push_pin_outlined),
+              title: Text(c.pinned ? '取消置顶' : '置顶'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                notifier.setPin(c.id, !c.pinned);
+              },
+            ),
+            ListTile(
+              leading: Icon(c.muted
+                  ? Icons.notifications_active_outlined
+                  : Icons.notifications_off_outlined),
+              title: Text(c.muted ? '取消免打扰' : '免打扰'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                notifier.setMute(c.id, !c.muted);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: const Text('从列表删除'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                notifier.hide(c.id);
               },
             ),
           ],

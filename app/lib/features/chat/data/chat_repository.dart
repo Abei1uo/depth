@@ -48,6 +48,47 @@ class ChatRepository {
     }
   }
 
+  Future<void> _postVoid(String path, [Object? data]) async {
+    try {
+      await _api.post<Map<String, dynamic>>(path, data: data);
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
+  /// 群改名（仅群主）。
+  Future<void> rename(String conversationId, String name) =>
+      _postVoid('/conversations/$conversationId/rename', {'name': name});
+
+  /// 加成员（仅群主）。
+  Future<void> addMembers(String conversationId, List<String> userIds) =>
+      _postVoid('/conversations/$conversationId/members/add', {'user_ids': userIds});
+
+  /// 踢成员（仅群主）。
+  Future<void> removeMember(String conversationId, String userId) =>
+      _postVoid('/conversations/$conversationId/members/remove', {'user_id': userId});
+
+  /// 退出群聊。
+  Future<void> leave(String conversationId) =>
+      _postVoid('/conversations/$conversationId/leave');
+
+  /// 置顶 / 取消置顶。
+  Future<void> pin(String conversationId, bool on) =>
+      _postVoid('/conversations/$conversationId/pin', {'pinned': on});
+
+  /// 免打扰 / 取消免打扰。
+  Future<void> mute(String conversationId, bool on) =>
+      _postVoid('/conversations/$conversationId/mute', {'muted': on});
+
+  /// 从我的会话列表删除（软隐藏）。
+  Future<void> hide(String conversationId) async {
+    try {
+      await _api.delete<Map<String, dynamic>>('/conversations/$conversationId');
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
   /// GET /api/v1/conversations/:id，返回会话详情与成员。
   Future<ConversationDetail> detail(String conversationId) async {
     try {

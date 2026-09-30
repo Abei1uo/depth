@@ -57,6 +57,9 @@ class ApiClient {
   Future<Response<T>> put<T>(String path, {Object? data}) =>
       _dio.put<T>(path, data: data);
 
+  Future<Response<T>> delete<T>(String path, {Object? data}) =>
+      _dio.delete<T>(path, data: data);
+
   Future<void> _handleError(
       DioException err, ErrorInterceptorHandler handler) async {
     final status = err.response?.statusCode;

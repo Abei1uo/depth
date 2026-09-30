@@ -19,6 +19,7 @@ type Router interface {
 // MemberLister 提供会话成员查询（由 chat.Repository 实现）。
 type MemberLister interface {
 	Members(ctx context.Context, convID string) ([]string, error)
+	Unhide(ctx context.Context, convID string, userIDs []string) error
 }
 
 // PushEnqueuer 离线推送入队（Phase 2 实现，MVP 可为空实现）。
@@ -115,6 +116,16 @@ func (s *Service) Deliver(ctx context.Context, m *Message, receivers []string, e
 				s.log.Warn("push enqueue failed", "user", uid, "err", err.Error())
 			}
 		}
+	}
+	// 收到他人新消息：解除接收方对该会话的「隐藏」（从列表删除后重新显示）。
+	var recipients []string
+	for _, uid := range receivers {
+		if uid != exclude {
+			recipients = append(recipients, uid)
+		}
+	}
+	if err := s.chat.Unhide(ctx, m.ConversationID, recipients); err != nil {
+		s.log.Warn("unhide on new message failed", "conv", m.ConversationID, "err", err.Error())
 	}
 }
 

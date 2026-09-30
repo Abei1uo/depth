@@ -15,6 +15,9 @@ const (
 	TypeGroup  = 1 // 群聊
 )
 
+// ErrForbidden 表示缺少群主权限（HTTP 映射 403）。
+var ErrForbidden = errors.New("需要群主权限")
+
 // Conversation 是会话实体。
 type Conversation struct {
 	ID        string   `json:"id"`
@@ -23,6 +26,8 @@ type Conversation struct {
 	AvatarURL string   `json:"avatar_url"`
 	OwnerID   string   `json:"owner_id"`
 	Unread    int      `json:"unread"`
+	Pinned    bool     `json:"pinned"`
+	Muted     bool     `json:"muted"`
 	MemberIDs []string `json:"member_ids,omitempty"`
 }
 
@@ -160,12 +165,12 @@ func (r *Repository) ListForUser(ctx context.Context, userID string) ([]*Convers
 		       (SELECT COUNT(*) FROM messages msg
 		          WHERE msg.conversation_id = c.id
 		            AND msg.sender_id <> $1
-		            AND msg.seq > COALESCE(r.last_read_seq, 0))
+		            AND msg.seq > COALESCE(r.last_read_seq, 0)), m.pinned, m.muted
 		FROM conversations c
 		JOIN conversation_members m ON m.conversation_id = c.id
 		LEFT JOIN conversation_reads r ON r.conversation_id = c.id AND r.user_id = m.user_id
-		WHERE m.user_id = $1
-		ORDER BY c.last_msg_at DESC NULLS LAST`, userID)
+		WHERE m.user_id = $1 AND m.hidden = false
+		ORDER BY m.pinned DESC, c.last_msg_at DESC NULLS LAST`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +178,7 @@ func (r *Repository) ListForUser(ctx context.Context, userID string) ([]*Convers
 	var out []*Conversation
 	for rows.Next() {
 		var c Conversation
-		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID, &c.Unread); err != nil {
+		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID, &c.Unread, &c.Pinned, &c.Muted); err != nil {
 			return nil, err
 		}
 		out = append(out, &c)
@@ -230,5 +235,99 @@ func (r *Repository) MarkRead(ctx context.Context, userID, convID string, maxSeq
 		  SET last_read_seq = GREATEST(conversation_reads.last_read_seq, EXCLUDED.last_read_seq),
 		      updated_at    = now()`,
 		userID, convID, maxSeq)
+	return err
+}
+
+// assertGroupOwner 校验 userID 是该群聊会话（type=1）的群主（role=2）。
+func (r *Repository) assertGroupOwner(ctx context.Context, convID, userID string) error {
+	var n int
+	if err := r.pool.QueryRow(ctx, `
+		SELECT count(*) FROM conversations c
+		JOIN conversation_members m ON m.conversation_id = c.id
+		WHERE c.id = $1 AND c.type = 1 AND m.user_id = $2 AND m.role = 2`, convID, userID).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrForbidden
+	}
+	return nil
+}
+
+// Rename 群改名（仅群主）。
+func (r *Repository) Rename(ctx context.Context, convID, byUserID, name string) error {
+	if err := r.assertGroupOwner(ctx, convID, byUserID); err != nil {
+		return err
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE conversations SET name = $1 WHERE id = $2`, name, convID)
+	return err
+}
+
+// AddMembers 加成员（仅群主）；已存在则忽略。
+func (r *Repository) AddMembers(ctx context.Context, convID, byUserID string, ids []string) error {
+	if err := r.assertGroupOwner(ctx, convID, byUserID); err != nil {
+		return err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, uid := range ids {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1, $2)
+			ON CONFLICT (conversation_id, user_id) DO NOTHING`, convID, uid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// RemoveMember 踢成员（仅群主，不可踢群主）。
+func (r *Repository) RemoveMember(ctx context.Context, convID, byUserID, targetID string) error {
+	if err := r.assertGroupOwner(ctx, convID, byUserID); err != nil {
+		return err
+	}
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM conversation_members
+		WHERE conversation_id = $1 AND user_id = $2 AND role <> 2`, convID, targetID)
+	return err
+}
+
+// Leave 退出会话（删除自身成员关系）。
+func (r *Repository) Leave(ctx context.Context, convID, userID string) error {
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`, convID, userID)
+	return err
+}
+
+// SetPin 设置置顶。
+func (r *Repository) SetPin(ctx context.Context, convID, userID string, on bool) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE conversation_members SET pinned = $3 WHERE conversation_id = $1 AND user_id = $2`, convID, userID, on)
+	return err
+}
+
+// SetMute 设置免打扰。
+func (r *Repository) SetMute(ctx context.Context, convID, userID string, on bool) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE conversation_members SET muted = $3 WHERE conversation_id = $1 AND user_id = $2`, convID, userID, on)
+	return err
+}
+
+// Hide 从我的会话列表删除（软隐藏，不删数据）。
+func (r *Repository) Hide(ctx context.Context, convID, userID string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE conversation_members SET hidden = true WHERE conversation_id = $1 AND user_id = $2`, convID, userID)
+	return err
+}
+
+// Unhide 收到他人新消息时解除隐藏（供消息分发调用）。
+func (r *Repository) Unhide(ctx context.Context, convID string, userIDs []string) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE conversation_members SET hidden = false
+		WHERE conversation_id = $1 AND user_id::text = ANY($2::text[]) AND hidden = true`, convID, userIDs)
 	return err
 }

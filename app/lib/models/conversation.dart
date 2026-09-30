@@ -8,6 +8,8 @@ class Conversation {
     required this.ownerId,
     required this.memberIds,
     this.unread = 0,
+    this.pinned = false,
+    this.muted = false,
   });
 
   /// 会话类型：0 单聊，1 群聊（与服务端常量一致）。
@@ -19,6 +21,9 @@ class Conversation {
   final List<String> memberIds;
   /// 未读数（他人发来且未读的消息数）。
   final int unread;
+  /// 成员级偏好：置顶 / 免打扰。
+  final bool pinned;
+  final bool muted;
 
   bool get isGroup => type == 1;
 
@@ -29,6 +34,8 @@ class Conversation {
         avatarUrl: json['avatar_url'] as String? ?? '',
         ownerId: json['owner_id'] as String? ?? '',
         unread: (json['unread'] as num? ?? 0).toInt(),
+        pinned: json['pinned'] as bool? ?? false,
+        muted: json['muted'] as bool? ?? false,
         memberIds: (json['member_ids'] as List<dynamic>? ?? const <dynamic>[])
             .map((e) => e as String)
             .toList(),

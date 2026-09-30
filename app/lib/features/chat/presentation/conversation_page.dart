@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/api/api_exception.dart';
 import '../../../core/presence/presence_controller.dart';
@@ -10,7 +11,9 @@ import '../../../core/ws/ws_client.dart';
 import '../../../core/ws/ws_envelope.dart';
 import '../../../models/conversation.dart';
 import '../../../models/message.dart';
+import '../../../models/user.dart';
 import '../../auth/application/session_controller.dart';
+import '../../auth/data/auth_repository.dart';
 import '../application/conversations_controller.dart';
 import '../data/chat_repository.dart';
 
@@ -201,41 +204,183 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     final d = _detail;
     if (d == null) return;
     final online = ref.read(presenceProvider);
+    final isGroup = d.conversation.isGroup;
+    final isOwner =
+        d.members.any((m) => m.userId == _meId && m.role == 2);
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: ListView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('成员', style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-            const Divider(height: 1),
-            ...d.members.map(
-              (m) => ListTile(
-                leading: CircleAvatar(
-                  child: Text(m.displayName.characters.first),
-                ),
-                title: Text(m.displayName),
-                subtitle: Text('@${m.username}'),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (online.contains(m.userId))
-                      const Icon(Icons.circle, size: 10, color: Colors.green),
-                    if (m.role == 2)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 6),
-                        child: Chip(label: Text('群主'), visualDensity: VisualDensity.compact),
-                      ),
-                  ],
-                ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('成员',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  if (isOwner && isGroup)
+                    IconButton(
+                      tooltip: '添加成员',
+                      icon: const Icon(Icons.person_add_alt),
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _addMember(d.conversation.id);
+                      },
+                    ),
+                  if (isOwner && isGroup)
+                    IconButton(
+                      tooltip: '改名',
+                      icon: const Icon(Icons.edit_outlined),
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _renameGroup(d.conversation.id, d.conversation.name);
+                      },
+                    ),
+                ],
               ),
             ),
+            const Divider(height: 1),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  ...d.members.map(
+                    (m) => ListTile(
+                      leading: CircleAvatar(
+                        child: Text(m.displayName.characters.first),
+                      ),
+                      title: Text(m.displayName),
+                      subtitle: Text('@${m.username}'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (online.contains(m.userId))
+                            const Icon(Icons.circle,
+                                size: 10, color: Colors.green),
+                          if (m.role == 2)
+                            const Padding(
+                              padding: EdgeInsets.only(left: 6),
+                              child: Chip(
+                                  label: Text('群主'),
+                                  visualDensity: VisualDensity.compact),
+                            ),
+                          if (isOwner && isGroup && m.userId != _meId && m.role != 2)
+                            IconButton(
+                              tooltip: '移出',
+                              icon: const Icon(Icons.person_remove_alt_1),
+                              onPressed: () {
+                                Navigator.of(ctx).pop();
+                                _removeMember(d.conversation.id, m);
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (isGroup)
+              ListTile(
+                leading: const Icon(Icons.logout, color: Colors.red),
+                title: const Text('退出群聊',
+                    style: TextStyle(color: Colors.red)),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _leaveGroup(d.conversation.id);
+                },
+              ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _renameGroup(String convId, String current) async {
+    final controller = TextEditingController(text: current);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('修改群名称'),
+        content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: '群名称')),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (name != null && name.isNotEmpty) {
+      await ref.read(conversationsProvider.notifier).rename(convId, name);
+      _loadDetail();
+    }
+  }
+
+  Future<void> _removeMember(String convId, ChatMember m) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        content: Text('确定将「${m.displayName}」移出群聊？'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('移出')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ref
+          .read(conversationsProvider.notifier)
+          .removeMember(convId, m.userId);
+      _loadDetail();
+    }
+  }
+
+  Future<void> _leaveGroup(String convId) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        content: const Text('确定退出该群聊？'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('退出')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ref.read(conversationsProvider.notifier).leave(convId);
+      if (mounted) context.go('/');
+    }
+  }
+
+  Future<void> _addMember(String convId) async {
+    final picked = await showModalBottomSheet<AppUser>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const _MemberPickerSheet(),
+    );
+    if (picked != null) {
+      await ref
+          .read(conversationsProvider.notifier)
+          .addMembers(convId, [picked.id]);
+      _loadDetail();
+    }
   }
 
   void _onIncoming(WsEnvelope env) {
@@ -650,4 +795,92 @@ String _formatTime(DateTime t) {
   final hh = local.hour.toString().padLeft(2, '0');
   final mm = local.minute.toString().padLeft(2, '0');
   return '$hh:$mm';
+}
+
+/// 搜索用户并选中一人（用于加成员），选中后返回该用户。
+class _MemberPickerSheet extends ConsumerStatefulWidget {
+  const _MemberPickerSheet();
+
+  @override
+  ConsumerState<_MemberPickerSheet> createState() => _MemberPickerSheetState();
+}
+
+class _MemberPickerSheetState extends ConsumerState<_MemberPickerSheet> {
+  final _q = TextEditingController();
+  List<AppUser> _results = const [];
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _q.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search() async {
+    final keyword = _q.text.trim();
+    if (keyword.isEmpty) return;
+    setState(() => _loading = true);
+    try {
+      final users = await ref.read(authRepositoryProvider).search(keyword);
+      setState(() {
+        _results = users;
+        _loading = false;
+      });
+    } catch (_) {
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: SafeArea(
+          child: SizedBox(
+            height: 420,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _q,
+                          autofocus: true,
+                          onSubmitted: (_) => _search(),
+                          decoration: const InputDecoration(
+                            labelText: '搜索用户名添加',
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                          onPressed: _search, icon: const Icon(Icons.search)),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: _loading
+                      ? const Center(child: CircularProgressIndicator())
+                      : ListView.builder(
+                          itemCount: _results.length,
+                          itemBuilder: (context, i) {
+                            final u = _results[i];
+                            return ListTile(
+                              leading: CircleAvatar(
+                                  child: Text(u.displayName.characters.first)),
+                              title: Text(u.displayName),
+                              subtitle: Text('@${u.username}'),
+                              onTap: () => Navigator.of(context).pop(u),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
 }
