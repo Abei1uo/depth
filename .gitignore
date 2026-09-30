@@ -11,6 +11,19 @@ desktop.ini
 *.tmp
 .tmp/
 
+# --- 本地对象存储 Silo（MinIO 分支）二进制与数据（运行时产物，不入库）---
+/.silo/
+/silo/
+silo-data/
+silodata/
+
+# --- 本地媒体链路联调用极简 S3 stub（非生产，不入库）---
+/.s3tmp/
+
+# --- Redis 本地落盘快照（运行时产物，不入库）---
+*.rdb
+server/dump.rdb
+
 # --- Android 构建产物（APK/AAB 不入库）---
 *.apk
 *.aab
