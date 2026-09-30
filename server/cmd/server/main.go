@@ -17,6 +17,7 @@ import (
 	"github.com/tss/depth/server/internal/auth"
 	"github.com/tss/depth/server/internal/chat"
 	"github.com/tss/depth/server/internal/gateway"
+	"github.com/tss/depth/server/internal/media"
 	"github.com/tss/depth/server/internal/message"
 	"github.com/tss/depth/server/internal/presence"
 	"github.com/tss/depth/server/internal/push"
@@ -94,6 +95,19 @@ func run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	userHandler := user.NewHandler(userRepo)
 	chatHandler := chat.NewHandler(chatRepo, msgSvc)
 
+	// 媒体（对象存储）。minio.New 为懒连接，后端不可用也不阻断启动，上传时才会失败。
+	mediaStore, err := media.New(cfg.StorageBackend, media.Config{
+		Endpoint:  cfg.S3Endpoint,
+		AccessKey: cfg.S3AccessKey,
+		SecretKey: cfg.S3SecretKey,
+		Bucket:    cfg.S3Bucket,
+		UseSSL:    cfg.S3UseSSL,
+	})
+	if err != nil {
+		return err
+	}
+	mediaHandler := media.NewHandler(mediaStore, media.NewRepo(pool), log)
+
 	// 组装路由
 	go wsServer.Hub().Run(ctx)
 	router := gateway.NewRouter(gateway.RouterDeps{
@@ -102,6 +116,7 @@ func run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		Auth:     authHandler,
 		Users:    userHandler,
 		Chats:    chatHandler,
+		Media:    mediaHandler,
 		Tokens:   tokens,
 		WSServer: wsServer,
 	})

@@ -8,6 +8,7 @@ import (
 
 	"github.com/tss/depth/server/internal/auth"
 	"github.com/tss/depth/server/internal/chat"
+	"github.com/tss/depth/server/internal/media"
 	"github.com/tss/depth/server/internal/user"
 	"github.com/tss/depth/server/pkg/config"
 	"github.com/tss/depth/server/pkg/middleware"
@@ -20,6 +21,7 @@ type RouterDeps struct {
 	Auth         *auth.Handler
 	Users        *user.Handler
 	Chats        *chat.Handler
+	Media        *media.Handler
 	Tokens       *auth.TokenManager
 	WSServer     *WSServer
 	PingInterval time.Duration
@@ -50,6 +52,12 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	authed := v1.Group("", middleware.Auth(d.Tokens))
 	d.Users.RegisterRoutes(authed)
 	d.Chats.RegisterRoutes(authed)
+
+	// 媒体：上传需登录（受保护组）；下载凭不可猜 id 公开（供 <img> 直接访问）。
+	if d.Media != nil {
+		d.Media.RegisterAuthed(authed)
+		d.Media.RegisterPublic(v1)
+	}
 
 	return r
 }

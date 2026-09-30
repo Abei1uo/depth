@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../../core/api/api_exception.dart';
 import '../../../core/presence/presence_controller.dart';
@@ -507,8 +510,13 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   void _send() {
     final text = _input.text.trim();
     if (text.isEmpty) return;
+    _input.clear();
+    _sendContent(MessageContent.text(text));
+  }
+
+  /// 发送一条内容（文本或媒体）：走 WS + 本地乐观上屏。
+  void _sendContent(MessageContent content) {
     final clientMsgId = _genClientMsgId();
-    final content = MessageContent.text(text);
 
     ref.read(wsClientProvider).send(WsEnvelope(
           type: WsEvents.sendMessage,
@@ -529,11 +537,64 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       content: content,
       createdAt: DateTime.now(),
     );
-    setState(() {
-      _messages.add(optimistic);
-      _input.clear();
-    });
+    setState(() => _messages.add(optimistic));
     _scrollToBottom();
+  }
+
+  /// 选择图片/文件：上传到对象存储拿 url，再以媒体消息发送。
+  Future<void> _pickAttachment() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('发送图片'),
+              onTap: () => Navigator.of(ctx).pop('image'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file),
+              title: const Text('发送文件'),
+              onTap: () => Navigator.of(ctx).pop('file'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null) return;
+    try {
+      if (choice == 'image') {
+        final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+        if (x == null) return;
+        await _uploadAndSend(File(x.path), type: MessageType.image);
+      } else {
+        final files = await FilePicker.pickFiles();
+        if (files.isEmpty) return;
+        final f = files.first;
+        final path = f.path;
+        if (path == null) return;
+        await _uploadAndSend(File(path), type: MessageType.file, name: f.name);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('发送失败：$e')));
+      }
+    }
+  }
+
+  Future<void> _uploadAndSend(File file,
+      {required int type, String? name}) async {
+    final repo = ref.read(chatRepositoryProvider);
+    final upload = await repo.uploadMedia(file, name: name);
+    if (!mounted) return;
+    _sendContent(MessageContent(
+      type: type,
+      mediaUrl: upload.url,
+      size: upload.size,
+    ));
   }
 
   String _genClientMsgId() =>
@@ -631,7 +692,8 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                     _InputBar(
                         controller: _input,
                         onSend: _send,
-                        onChanged: _notifyTyping),
+                        onChanged: _notifyTyping,
+                        onAttach: _pickAttachment),
                   ],
                 ),
     );
@@ -662,8 +724,7 @@ class _Bubble extends StatelessWidget {
           crossAxisAlignment:
               isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
-            Text(message.content.text.isEmpty ? '[非文本消息]' : message.content.text,
-                textAlign: align),
+            _messageBody(context, message.content, align),
             const SizedBox(height: 2),
             Row(
               mainAxisSize: MainAxisSize.min,
@@ -693,11 +754,16 @@ class _Bubble extends StatelessWidget {
 }
 
 class _InputBar extends StatelessWidget {
-  const _InputBar({required this.controller, required this.onSend, this.onChanged});
+  const _InputBar(
+      {required this.controller,
+      required this.onSend,
+      this.onChanged,
+      this.onAttach});
 
   final TextEditingController controller;
   final VoidCallback onSend;
   final VoidCallback? onChanged;
+  final VoidCallback? onAttach;
 
   @override
   Widget build(BuildContext context) {
@@ -706,6 +772,10 @@ class _InputBar extends StatelessWidget {
         padding: const EdgeInsets.all(8),
         child: Row(
           children: [
+            if (onAttach != null)
+              IconButton(
+                  onPressed: onAttach,
+                  icon: const Icon(Icons.add_circle_outline)),
             Expanded(
               child: TextField(
                 controller: controller,
@@ -787,6 +857,55 @@ class _EmptyMessages extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// 根据消息类型渲染气泡主体（文本/图片/文件/语音）。
+Widget _messageBody(BuildContext context, MessageContent c, TextAlign align) {
+  switch (c.type) {
+    case MessageType.image:
+      if (c.mediaUrl.isEmpty) {
+        return Text('[图片上传中…]', textAlign: align);
+      }
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.network(
+          c.mediaUrl,
+          width: 200,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => const Text('图片加载失败'),
+          loadingBuilder: (_, child, progress) => progress == null
+              ? child
+              : const SizedBox(
+                  width: 200,
+                  height: 120,
+                  child: Center(
+                      child: CircularProgressIndicator(strokeWidth: 2)),
+                ),
+        ),
+      );
+    case MessageType.file:
+      final name = c.mediaUrl.split('/').last;
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.insert_drive_file_outlined, size: 22),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 180),
+            child: Text(
+              name.isEmpty ? '文件' : name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: align,
+            ),
+          ),
+        ],
+      );
+    case MessageType.voice:
+      return const Text('[语音]（未实现）');
+    default:
+      return Text(c.text.isEmpty ? '[消息]' : c.text, textAlign: align);
+  }
 }
 
 /// 将时间格式化为 HH:mm（24 小时制）。

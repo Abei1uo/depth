@@ -78,8 +78,34 @@ depth/
 | `JWT_DEV_SECRET` | `dev-only-insecure-secret` | 仅开发回退 HS256 |
 | `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` | 空 | 生产 RS256 |
 | `ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL` | `2h` / `720h` | |
+| `STORAGE_BACKEND` | `s3` | 对象存储后端；`s3`/`minio` 都走 minio-go（S3 协议） |
+| `S3_ENDPOINT` | `localhost:9000` | MinIO/S3 服务地址（兼容旧名 `MINIO_ENDPOINT`） |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `minioadmin` / `minioadmin` | 凭据（兼容 `MINIO_*`） |
+| `S3_BUCKET` | `im-media` | 桶名（服务端首次上传自动建桶） |
+| `S3_USE_SSL` | `false` | 生产置 `true` |
 
 > 本地开发通常**一个环境变量都不用设**，默认值即可连本机 PG + Redis。
+>
+> ⚠️ **Windows 下 Redis 连不上（`dial tcp [::1]:6379 ... refused`）**：`REDIS_ADDR` 默认 `localhost:6379`，
+> 而 Windows 版 Redis 常只监听 IPv4 `127.0.0.1`，go-redis 先解析到 `::1` 会被拒。设：
+> ```powershell
+> $env:REDIS_ADDR = '127.0.0.1:6379'
+> ```
+
+### 对象存储 MinIO（富媒体消息，非 Docker）
+
+上传/下载媒体需要一个 S3 兼容后端。本地推荐跑单二进制 MinIO：
+
+1. 手动下载 `minio.exe`（min.io/download），放到 `D:\minio\minio.exe`（或自备路径）。
+2. 启动（默认数据目录 `D:\miniodata`，API `:9000`，控制台 `:9001`）：
+   ```powershell
+   pwsh -File d:\workspace\tss\depth\scripts\start_minio.ps1
+   ```
+3. 无需手动建桶；服务端 `im-media` 桶在首次上传时自动创建。客户端只访问 `:8080`（媒体经服务端代理）。
+
+> 生产切换：只需把 `S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/S3_BUCKET/S3_USE_SSL` 指向任意 S3 兼容服务
+> （AWS S3 / 阿里 OSS S3 兼容模式 / Ceph）；接非 S3 协议服务时在 `internal/media` 新增一个 `Store` 实现即可。
+
 
 ---
 

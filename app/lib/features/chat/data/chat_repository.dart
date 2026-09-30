@@ -1,3 +1,5 @@
+import 'dart:io' show File;
+
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -122,8 +124,47 @@ class ChatRepository {
       throw ApiException.from(e);
     }
   }
+
+  /// POST /api/v1/media（multipart）——上传一个文件，返回媒体登记（含下载 url）。
+  Future<MediaUpload> uploadMedia(File file, {String? name}) async {
+    try {
+      final fileName = name ?? file.path.split(RegExp(r'[\\/]')).last;
+      final form = FormData.fromMap(<String, dynamic>{
+        'file': await MultipartFile.fromFile(file.path, filename: fileName),
+      });
+      // 直接用带鉴权拦截器的 dio；baseUrl 已含 /api/v1。
+      final resp = await _api.dio.post<Map<String, dynamic>>('/media', data: form);
+      final data = resp.data ?? const <String, dynamic>{};
+      return MediaUpload(
+        mediaId: data['media_id'] as String? ?? '',
+        url: data['url'] as String? ?? '',
+        mime: data['mime'] as String? ?? '',
+        size: (data['size'] as num? ?? 0).toInt(),
+        fileName: fileName,
+      );
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
 }
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {
   return ChatRepository(ref.watch(apiClientProvider));
 });
+
+/// 一次媒体上传的结果。
+class MediaUpload {
+  const MediaUpload({
+    required this.mediaId,
+    required this.url,
+    required this.mime,
+    required this.size,
+    required this.fileName,
+  });
+
+  final String mediaId;
+  final String url;
+  final String mime;
+  final int size;
+  final String fileName;
+}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"testing"
@@ -795,6 +796,70 @@ func TestConversationPrefs(t *testing.T) {
 	sendText(t, tokenB, convB, "wake")
 	if convIndex(listConvs(t, tokenA), convB) < 0 {
 		t.Fatalf("收到新消息后 convB 应重新出现在列表")
+	}
+}
+
+// TestMediaUploadAndFetch 验证：上传媒体到对象存储并代理下载。
+// 未配 MinIO/对象存储时（上传返回 5xx）自动 skip。
+func TestMediaUploadAndFetch(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	token, _ := register(t, "mdU")
+
+	payload := []byte("\x89PNG\r\n\x1a\n fake-media-bytes")
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("file", "test.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, baseURL()+"/api/v1/media", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 500 {
+		t.Skipf("对象存储不可用（上传 %d），跳过媒体测试: %s", resp.StatusCode, string(body))
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("上传期望 200，实际 %d: %s", resp.StatusCode, string(body))
+	}
+
+	var up struct {
+		MediaID string `json:"media_id"`
+		URL     string `json:"url"`
+		Mime    string `json:"mime"`
+	}
+	if err := json.Unmarshal(body, &up); err != nil {
+		t.Fatalf("解析上传响应: %v (%s)", err, string(body))
+	}
+	if up.MediaID == "" || up.URL == "" {
+		t.Fatalf("上传响应缺字段: %+v", up)
+	}
+
+	// 公开下载（无 Authorization 头），内容应一致。
+	dl, err := http.Get(up.URL)
+	if err != nil {
+		t.Fatalf("下载请求: %v", err)
+	}
+	defer dl.Body.Close()
+	got, _ := io.ReadAll(dl.Body)
+	if dl.StatusCode != http.StatusOK {
+		t.Fatalf("下载期望 200，实际 %d", dl.StatusCode)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("下载内容不一致: got %d bytes want %d", len(got), len(payload))
 	}
 }
 

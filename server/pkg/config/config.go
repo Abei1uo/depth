@@ -25,12 +25,13 @@ type Config struct {
 	AccessTokenTTL    time.Duration
 	RefreshTokenTTL   time.Duration
 
-	// MinIO 对象存储
-	MinIOEndpoint  string
-	MinIOAccessKey string
-	MinIOSecretKey string
-	MinIOBucket    string
-	MinIOUseSSL    bool
+	// 对象存储（后端无关；默认走 S3 协议的 MinIO）。
+	StorageBackend string // s3 | minio（均走 minio-go，兼容任意 S3 服务）
+	S3Endpoint     string
+	S3AccessKey    string
+	S3SecretKey    string
+	S3Bucket       string
+	S3UseSSL       bool
 
 	// 心跳
 	PingInterval time.Duration
@@ -55,11 +56,12 @@ func Load() *Config {
 		AccessTokenTTL:    getDurationEnv("ACCESS_TOKEN_TTL", time.Hour*2),
 		RefreshTokenTTL:   getDurationEnv("REFRESH_TOKEN_TTL", time.Hour*24*30),
 
-		MinIOEndpoint:  getEnv("MINIO_ENDPOINT", "localhost:9000"),
-		MinIOAccessKey: getEnv("MINIO_ACCESS_KEY", "minioadmin"),
-		MinIOSecretKey: getEnv("MINIO_SECRET_KEY", "minioadmin"),
-		MinIOBucket:    getEnv("MINIO_BUCKET", "im-media"),
-		MinIOUseSSL:    getBoolEnv("MINIO_USE_SSL", false),
+		StorageBackend: getEnv("STORAGE_BACKEND", "s3"),
+		S3Endpoint:     getEnvAny("localhost:9000", "S3_ENDPOINT", "MINIO_ENDPOINT"),
+		S3AccessKey:    getEnvAny("minioadmin", "S3_ACCESS_KEY", "MINIO_ACCESS_KEY"),
+		S3SecretKey:    getEnvAny("minioadmin", "S3_SECRET_KEY", "MINIO_SECRET_KEY"),
+		S3Bucket:       getEnvAny("im-media", "S3_BUCKET", "MINIO_BUCKET"),
+		S3UseSSL:       getBoolAny(false, "S3_USE_SSL", "MINIO_USE_SSL"),
 
 		PingInterval: getDurationEnv("WS_PING_INTERVAL", time.Second*30),
 		PongTimeout:  getDurationEnv("WS_PONG_TIMEOUT", time.Second*60),
@@ -72,6 +74,27 @@ func (c *Config) IsProduction() bool { return c.Env == "production" }
 func getEnv(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
+	}
+	return def
+}
+
+// getEnvAny 依次尝试多个环境变量名，返回首个非空值（兼容 S3_* 与旧 MINIO_*）。
+func getEnvAny(def string, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := os.LookupEnv(k); ok && v != "" {
+			return v
+		}
+	}
+	return def
+}
+
+func getBoolAny(def bool, keys ...string) bool {
+	for _, k := range keys {
+		if v, ok := os.LookupEnv(k); ok {
+			if b, err := strconv.ParseBool(v); err == nil {
+				return b
+			}
+		}
 	}
 	return def
 }
