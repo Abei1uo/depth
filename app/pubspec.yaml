@@ -41,6 +41,7 @@ dependencies:
   go_router: ^18.0.2
   protobuf: ^6.1.0
   fixnum: ^1.1.1
+  flutter_secure_storage: ^11.2.0
 
 dev_dependencies:
   flutter_test:

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -28,6 +29,11 @@ class WsClient {
   final StreamController<bool> _status = StreamController<bool>.broadcast();
 
   static const List<int> _backoffSeconds = <int>[1, 2, 5, 10, 30];
+
+  /// 未连接时的待发队列（内存态，FIFO）。重连成功后按序补发。
+  /// 注意：App 进程被杀则丢失；持久化待发队列列入后续轮次。
+  static const int _maxOutbox = 200;
+  final List<WsEnvelope> _outbox = <WsEnvelope>[];
 
   Stream<WsEnvelope> get incoming => _incoming.stream;
   Stream<bool> get status => _status.stream;
@@ -60,6 +66,7 @@ class WsClient {
         cancelOnError: true,
       );
       _addStatus(true);
+      _flushOutbox();
     } catch (_) {
       _handleDisconnect();
     }
@@ -85,14 +92,38 @@ class WsClient {
     if (!_status.isClosed) _status.add(value);
   }
 
-  /// 发送一个信封；未连接时静默丢弃（真实场景应入队重发，见 Phase 2）。
+  /// 发送一个信封；未连接则入队，待重连成功后补发（上限 [_maxOutbox]，满则丢弃最旧）。
   void send(WsEnvelope envelope) {
-    _channel?.sink.add(envelope.encode());
+    final channel = _channel;
+    if (channel == null) {
+      if (_outbox.length >= _maxOutbox) {
+        _outbox.removeAt(0); // 超出上限，丢弃最旧一条
+      }
+      _outbox.add(envelope);
+      return;
+    }
+    channel.sink.add(envelope.encode());
   }
+
+  /// 重连成功后补发队列中的信封。仍携带原 client_msg_id，服务端会幂等去重。
+  void _flushOutbox() {
+    final channel = _channel;
+    if (channel == null || _outbox.isEmpty) return;
+    final pending = List<WsEnvelope>.of(_outbox);
+    _outbox.clear();
+    for (final env in pending) {
+      channel.sink.add(env.encode());
+    }
+  }
+
+  /// 当前待发队列长度（仅供测试观察）。
+  @visibleForTesting
+  int get pendingOutbox => _outbox.length;
 
   /// 主动断开（登出时调用），不再自动重连。
   void close() {
     _shouldReconnect = false;
+    _outbox.clear();
     _reconnectTimer?.cancel();
     _sub?.cancel();
     _sub = null;

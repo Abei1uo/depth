@@ -99,6 +99,25 @@ class SessionController extends Notifier<AuthState> {
     _ws.connect(AppConfig.wsBaseUrl, session.accessToken);
     state = AuthState(status: AuthStatus.authenticated, user: session.user);
   }
+
+  /// 启动时尝试恢复会话：从安全存储取回令牌，若有效则拉取用户信息并连接 WS。
+  /// 由 main() 在 runApp 前 await 调用，避免登录页闪现。
+  Future<void> bootstrap() async {
+    await _tokens.restore();
+    if (!_tokens.hasAccessToken) {
+      state = const AuthState(status: AuthStatus.unauthenticated);
+      return;
+    }
+    try {
+      final user = await _repo.me();
+      _ws.connect(AppConfig.wsBaseUrl, _tokens.accessToken!);
+      state = AuthState(status: AuthStatus.authenticated, user: user);
+    } catch (_) {
+      // 令牌失效且刷新失败：登出回到登录页。
+      _tokens.clear();
+      state = const AuthState(status: AuthStatus.unauthenticated);
+    }
+  }
 }
 
 final sessionControllerProvider =
