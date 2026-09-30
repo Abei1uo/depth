@@ -2,7 +2,8 @@
 
 // Package e2e 针对真实运行的后端（HTTP + WebSocket + PG + Redis）做端到端验证。
 // 运行前提：后端已在 BASE（默认 http://localhost:8080）启动，PG/Redis 就绪。
-//   go test -tags=integration ./test/... -run TestWS -v
+//
+//	go test -tags=integration ./test/... -run TestWS -v
 package e2e
 
 import (
