@@ -10,6 +10,9 @@ class Conversation {
     this.unread = 0,
     this.pinned = false,
     this.muted = false,
+    this.preview = '',
+    this.lastAt,
+    this.mentionMe = false,
   });
 
   /// 会话类型：0 单聊，1 群聊（与服务端常量一致）。
@@ -24,6 +27,12 @@ class Conversation {
   /// 成员级偏好：置顶 / 免打扰。
   final bool pinned;
   final bool muted;
+  /// 最后一条消息预览（服务端根据类型/撤回生成）。
+  final String preview;
+  /// 最后消息时间（用于列表排序展示）。
+  final DateTime? lastAt;
+  /// 最后一条消息是否 @ 了本人。
+  final bool mentionMe;
 
   bool get isGroup => type == 1;
 
@@ -36,6 +45,9 @@ class Conversation {
         unread: (json['unread'] as num? ?? 0).toInt(),
         pinned: json['pinned'] as bool? ?? false,
         muted: json['muted'] as bool? ?? false,
+        preview: json['preview'] as String? ?? '',
+        lastAt: DateTime.tryParse(json['last_at'] as String? ?? ''),
+        mentionMe: json['mention_me'] as bool? ?? false,
         memberIds: (json['member_ids'] as List<dynamic>? ?? const <dynamic>[])
             .map((e) => e as String)
             .toList(),

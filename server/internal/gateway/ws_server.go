@@ -173,6 +173,26 @@ func (s *WSServer) handleMarkRead(ctx context.Context, client *ws.Client, env *w
 		s.log.Warn("mark_read failed", "err", err.Error())
 		return nil, err
 	}
+	// 向同会话其他成员广播已读游标，供发送方展示“已读”回执。
+	if s.msgSvc != nil {
+		data, err := ws.Encode(ws.EventMsgRead, gin.H{
+			"conversation_id": req.ConversationID,
+			"user_id":         client.UserID(),
+			"max_seq":         req.MaxSeq,
+		})
+		if err == nil {
+			if members, err := s.msgSvc.Members(ctx, req.ConversationID); err == nil {
+				for _, uid := range members {
+					if uid == client.UserID() {
+						continue
+					}
+					if s.hub.IsOnline(uid) {
+						s.hub.SendToUser(uid, data)
+					}
+				}
+			}
+		}
+	}
 	return nil, nil
 }
 

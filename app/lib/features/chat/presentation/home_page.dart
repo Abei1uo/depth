@@ -9,6 +9,19 @@ import '../../auth/application/session_controller.dart';
 import '../../auth/data/auth_repository.dart';
 import '../application/conversations_controller.dart';
 
+/// 会话列表时间：今天显 HH:mm，否则显 M/D。
+String _formatListTime(DateTime? t) {
+  if (t == null) return '';
+  final local = t.toLocal();
+  final now = DateTime.now();
+  final sameDay =
+      local.year == now.year && local.month == now.month && local.day == now.day;
+  if (sameDay) {
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+  return '${local.month}/${local.day}';
+}
+
 /// 首页：会话列表 + 新建单聊入口。
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
@@ -64,6 +77,36 @@ class HomePage extends ConsumerWidget {
                             c.name.isEmpty
                                 ? '会话 ${c.id.substring(0, 6)}'
                                 : c.name,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (c.lastAt != null) ...[
+                          const SizedBox(width: 6),
+                          Text(_formatListTime(c.lastAt),
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.color)),
+                        ],
+                      ],
+                    ),
+                    subtitle: Row(
+                      children: [
+                        if (c.mentionMe)
+                          const Padding(
+                            padding: EdgeInsets.only(right: 4),
+                            child: Text('@我',
+                                style: TextStyle(
+                                    color: Colors.red,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12)),
+                          ),
+                        Expanded(
+                          child: Text(
+                            c.preview.isEmpty ? '暂无消息' : c.preview,
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),

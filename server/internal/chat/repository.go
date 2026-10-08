@@ -4,6 +4,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,15 +21,18 @@ var ErrForbidden = errors.New("需要群主权限")
 
 // Conversation 是会话实体。
 type Conversation struct {
-	ID        string   `json:"id"`
-	Type      int16    `json:"type"`
-	Name      string   `json:"name"`
-	AvatarURL string   `json:"avatar_url"`
-	OwnerID   string   `json:"owner_id"`
-	Unread    int      `json:"unread"`
-	Pinned    bool     `json:"pinned"`
-	Muted     bool     `json:"muted"`
-	MemberIDs []string `json:"member_ids,omitempty"`
+	ID        string     `json:"id"`
+	Type      int16      `json:"type"`
+	Name      string     `json:"name"`
+	AvatarURL string     `json:"avatar_url"`
+	OwnerID   string     `json:"owner_id"`
+	Unread    int        `json:"unread"`
+	Pinned    bool       `json:"pinned"`
+	Muted     bool       `json:"muted"`
+	Preview   string     `json:"preview"`
+	LastAt    *time.Time `json:"last_at,omitempty"`
+	MentionMe bool       `json:"mention_me"`
+	MemberIDs []string   `json:"member_ids,omitempty"`
 }
 
 // Repository 封装会话相关持久化。
@@ -165,10 +169,29 @@ func (r *Repository) ListForUser(ctx context.Context, userID string) ([]*Convers
 		       (SELECT COUNT(*) FROM messages msg
 		          WHERE msg.conversation_id = c.id
 		            AND msg.sender_id <> $1
-		            AND msg.seq > COALESCE(r.last_read_seq, 0)), m.pinned, m.muted
+		            AND msg.seq > COALESCE(r.last_read_seq, 0)),
+		       m.pinned, m.muted,
+		       CASE
+		         WHEN lm.id IS NULL THEN ''
+		         WHEN lm.recalled THEN '[撤回了一条消息]'
+		         WHEN lm.type = 1 THEN '[图片]'
+		         WHEN lm.type = 2 THEN '[文件]'
+		         WHEN lm.type = 3 THEN '[语音]'
+		         ELSE COALESCE(lm.text,'')
+		       END AS preview,
+		       COALESCE(lm.created_at, c.last_msg_at) AS last_at,
+		       COALESCE(lm.content->'mentions' @> jsonb_build_array($1::text), false) AS mention_me
 		FROM conversations c
 		JOIN conversation_members m ON m.conversation_id = c.id
 		LEFT JOIN conversation_reads r ON r.conversation_id = c.id AND r.user_id = m.user_id
+				LEFT JOIN LATERAL (
+				  SELECT msg2.id, msg2.type, msg2.recalled, msg2.created_at,
+				         msg2.content->>'text' AS text, msg2.content AS content
+				  FROM messages msg2
+				  WHERE msg2.conversation_id = c.id
+				  ORDER BY msg2.seq DESC
+				  LIMIT 1
+				) lm ON true
 		WHERE m.user_id = $1 AND m.hidden = false
 		ORDER BY m.pinned DESC, c.last_msg_at DESC NULLS LAST`, userID)
 	if err != nil {
@@ -178,7 +201,8 @@ func (r *Repository) ListForUser(ctx context.Context, userID string) ([]*Convers
 	var out []*Conversation
 	for rows.Next() {
 		var c Conversation
-		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID, &c.Unread, &c.Pinned, &c.Muted); err != nil {
+		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID,
+			&c.Unread, &c.Pinned, &c.Muted, &c.Preview, &c.LastAt, &c.MentionMe); err != nil {
 			return nil, err
 		}
 		out = append(out, &c)

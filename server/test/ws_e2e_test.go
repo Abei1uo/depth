@@ -1252,3 +1252,93 @@ func TestVoiceMessageFlow(t *testing.T) {
 		t.Fatalf("语音下载校验失败 status=%d len=%d", resp.StatusCode, len(dl))
 	}
 }
+
+// TestReadReceipt 验证：B 已读后，A 收到 msg_read 广播（供发送方展示已读）。
+func TestReadReceipt(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tokenA, _ := register(t, "rrA")
+	tokenB, idB := register(t, "rrB")
+	conv := createDirect(t, tokenA, idB)
+
+	wsA, wsB := wsDial(t, ctx, tokenA), wsDial(t, ctx, tokenB)
+	defer wsA.CloseNow()
+	defer wsB.CloseNow()
+	time.Sleep(500 * time.Millisecond)
+
+	sid := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "read-me-" + randStr()})
+	got := awaitPayload(t, wsB, func(p map[string]any) bool {
+		return p["server_msg_id"] == sid
+	}, 8*time.Second)
+	if got == nil {
+		t.Fatal("B 未收到消息")
+	}
+	seq := asInt64(got["seq"])
+
+	sendEnvelope(t, wsB, "mark_read", map[string]any{"conversation_id": conv, "max_seq": seq})
+
+	rd := awaitPayload(t, wsA, func(p map[string]any) bool {
+		return p["user_id"] == idB && asInt64(p["max_seq"]) >= seq &&
+			p["conversation_id"] == conv
+	}, 8*time.Second)
+	if rd == nil {
+		t.Fatal("A 未收到已读回执 msg_read")
+	}
+}
+
+// TestConversationPreview 验证：会话列表返回最后消息预览、@我标记与时间。
+func TestConversationPreview(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tokenA, idA := register(t, "pvA")
+	tokenB, idB := register(t, "pvB")
+	conv := createDirect(t, tokenA, idB)
+
+	// B 发一条 @A 的文本消息（作为会话最后一条）
+	wsB := wsDial(t, ctx, tokenB)
+	defer wsB.CloseNow()
+	time.Sleep(300 * time.Millisecond)
+	body := "hello-preview-" + randStr()
+	sendContentVia(t, wsB, conv, map[string]any{
+		"type": 0, "text": body, "mentions": []string{idA},
+	})
+
+	var res struct {
+		Conversations []struct {
+			ID      string  `json:"id"`
+			Preview string  `json:"preview"`
+			Mention bool    `json:"mention_me"`
+			LastAt  *string `json:"last_at"`
+		} `json:"conversations"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations", tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("list got %d", code)
+	}
+	var found bool
+	for _, c := range res.Conversations {
+		if c.ID != conv {
+			continue
+		}
+		found = true
+		if c.Preview != body {
+			t.Fatalf("preview 不符: got %q want %q", c.Preview, body)
+		}
+		if !c.Mention {
+			t.Fatal("mention_me 应为 true")
+		}
+		if c.LastAt == nil {
+			t.Fatal("last_at 为空")
+		}
+	}
+	if !found {
+		t.Fatal("列表未含该会话")
+	}
+}

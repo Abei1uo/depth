@@ -42,6 +42,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   bool _loading = true;
   bool _online = true;
   int _lastSeq = 0; // 本会话已知最大 seq，用于断线重连补拉
+  int _peerReadSeq = 0; // 对方已读到的最大 seq（用于已读回执）
   int? _oldestSeq; // 已加载的最早 seq，用于向更早分页
   bool _loadingMore = false;
   bool _hasMore = true;
@@ -460,6 +461,12 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
         if (!mounted) break;
         final msg = env.payload['message'] as String? ?? '操作失败';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        break;
+      case WsEvents.msgRead:
+        if (env.payload['conversation_id'] != widget.conversationId) break;
+        if (env.payload['user_id'] == _meId) break;
+        final rs = (env.payload['max_seq'] as num? ?? 0).toInt();
+        if (rs > _peerReadSeq) setState(() => _peerReadSeq = rs);
         break;
       default:
         break;
@@ -935,6 +942,9 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                       : '${_memberName(reply.senderId)}: ${reply.text}',
                                   mentionsMe:
                                       m.content.mentions.contains(_meId),
+                                  read: m.senderId == _meId &&
+                                      m.seq > 0 &&
+                                      m.seq <= _peerReadSeq,
                                   onLongPress: () => _showBubbleMenu(m),
                                 );
                               },
@@ -973,6 +983,7 @@ class _Bubble extends StatelessWidget {
     required this.isMe,
     this.replyPreview,
     this.mentionsMe = false,
+    this.read = false,
     this.onLongPress,
   });
 
@@ -980,6 +991,7 @@ class _Bubble extends StatelessWidget {
   final bool isMe;
   final String? replyPreview;
   final bool mentionsMe;
+  final bool read;
   final VoidCallback? onLongPress;
 
   @override
@@ -1028,9 +1040,13 @@ class _Bubble extends StatelessWidget {
                     Icon(
                       message.serverMsgId.isEmpty
                           ? Icons.schedule
-                          : Icons.check_circle_outline,
+                          : (read
+                              ? Icons.done_all
+                              : Icons.check_circle_outline),
                       size: 12,
-                      color: Theme.of(context).textTheme.labelSmall?.color,
+                      color: read
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).textTheme.labelSmall?.color,
                     ),
                   ],
                 ],
