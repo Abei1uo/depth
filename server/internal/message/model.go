@@ -22,6 +22,17 @@ type Content struct {
 	MediaURL  string `json:"media_url,omitempty"`
 	ThumbURL  string `json:"thumb_url,omitempty"`
 	SizeBytes int64  `json:"size,omitempty"`
+	// ReplyTo 非空表示本条为引用回复；随 content JSONB 存储。
+	ReplyTo *ReplyInfo `json:"reply_to,omitempty"`
+	// Mentions 为被 @ 的成员用户 ID 列表。
+	Mentions []string `json:"mentions,omitempty"`
+}
+
+// ReplyInfo 是被引用消息的快照（仅用于展示摘要，不保证源消息仍存在）。
+type ReplyInfo struct {
+	MsgID    string `json:"msg_id"`
+	SenderID string `json:"sender_id"`
+	Text     string `json:"text"` // 引用正文摘要
 }
 
 // Message 是服务端落库后的完整消息实体。
@@ -32,6 +43,7 @@ type Message struct {
 	SenderID       string    `json:"sender_id"`
 	Seq            int64     `json:"seq"`
 	Content        Content   `json:"content"`
+	Recalled       bool      `json:"recalled"`
 	CreatedAt      time.Time `json:"timestamp"`
 }
 

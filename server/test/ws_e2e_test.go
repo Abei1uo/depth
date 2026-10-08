@@ -16,6 +16,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -909,5 +910,255 @@ func asInt64(v any) int64 {
 		return x
 	default:
 		return 0
+	}
+}
+
+// awaitPayload 读取下行帧直到谓词命中，返回命中的 payload（超时返回 nil）。
+func awaitPayload(t *testing.T, ws *websocket.Conn, pred func(map[string]any) bool, timeout time.Duration) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Until(deadline))
+		_, data, err := ws.Read(ctx)
+		cancel()
+		if err != nil {
+			return nil
+		}
+		var env envelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			continue
+		}
+		var p map[string]any
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			continue
+		}
+		if pred(p) {
+			return p
+		}
+	}
+	return nil
+}
+
+func wsDial(t *testing.T, ctx context.Context, token string) *websocket.Conn {
+	t.Helper()
+	c, _, err := websocket.Dial(ctx, wsURL()+"?token="+token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func sendEnvelope(t *testing.T, ws *websocket.Conn, typ string, payload map[string]any) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, _ := json.Marshal(payload)
+	if err := ws.Write(ctx, websocket.MessageText, marshalEnvelope(t, typ, raw)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sendContentVia 通过已连接的 ws 发送一条消息并等待 ack，返回 server_msg_id。
+func sendContentVia(t *testing.T, ws *websocket.Conn, convID string, content map[string]any) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cid := "c-" + randStr()
+	payload, _ := json.Marshal(map[string]any{
+		"client_msg_id":   cid,
+		"conversation_id": convID,
+		"content":         content,
+	})
+	if err := ws.Write(ctx, websocket.MessageText, marshalEnvelope(t, "send_message", payload)); err != nil {
+		t.Fatal(err)
+	}
+	ack := awaitPayload(t, ws, func(p map[string]any) bool {
+		return p["client_msg_id"] == cid && asInt64(p["seq"]) > 0
+	}, 8*time.Second)
+	if ack == nil {
+		t.Fatal("send 未收到 ack")
+	}
+	sid, _ := ack["server_msg_id"].(string)
+	if sid == "" {
+		t.Fatal("ack 缺 server_msg_id")
+	}
+	return sid
+}
+
+// TestMessageRecallAndEdit 验证：本人撤回/编辑→服务端落库并向成员广播 message_update；越权被拒。
+func TestMessageRecallAndEdit(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tokenA, _ := register(t, "rcA")
+	tokenB, idB := register(t, "rcB")
+	conv := createDirect(t, tokenA, idB)
+
+	wsA, wsB := wsDial(t, ctx, tokenA), wsDial(t, ctx, tokenB)
+	defer wsA.CloseNow()
+	defer wsB.CloseNow()
+	time.Sleep(500 * time.Millisecond)
+
+	// 撤回
+	sid1 := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "to-recall-" + randStr()})
+	sendEnvelope(t, wsA, "recall_message", map[string]any{"conversation_id": conv, "server_msg_id": sid1})
+	upA := awaitPayload(t, wsA, func(p map[string]any) bool {
+		return p["server_msg_id"] == sid1 && p["recalled"] == true
+	}, 8*time.Second)
+	if upA == nil {
+		t.Fatal("A 未收到撤回的 message_update")
+	}
+	if tc, ok := upA["content"].(map[string]any)["text"].(string); ok && tc != "" {
+		t.Fatalf("撤回后正文未清空: %v", tc)
+	}
+	upB := awaitPayload(t, wsB, func(p map[string]any) bool {
+		return p["server_msg_id"] == sid1 && p["recalled"] == true
+	}, 8*time.Second)
+	if upB == nil {
+		t.Fatal("B 未收到撤回的 message_update")
+	}
+
+	// 编辑
+	sid2 := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "orig-" + randStr()})
+	edited := "edited-" + randStr()
+	sendEnvelope(t, wsA, "edit_message", map[string]any{"conversation_id": conv, "server_msg_id": sid2, "text": edited})
+	upEdit := awaitPayload(t, wsB, func(p map[string]any) bool {
+		if p["server_msg_id"] != sid2 {
+			return false
+		}
+		c, _ := p["content"].(map[string]any)
+		return c["text"] == edited
+	}, 8*time.Second)
+	if upEdit == nil {
+		t.Fatal("B 未收到编辑的 message_update")
+	}
+
+	// 越权：B 撤回 A 的消息应被拒（收到 error 帧）
+	sid3 := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "not-yours-" + randStr()})
+	sendEnvelope(t, wsB, "recall_message", map[string]any{"conversation_id": conv, "server_msg_id": sid3})
+	if errFrame := awaitPayload(t, wsB, func(p map[string]any) bool {
+		return p["message"] != nil
+	}, 6*time.Second); errFrame == nil {
+		t.Fatal("B 越权撤回未收到错误回执")
+	}
+	_ = tokenB
+}
+
+// TestMessageMentionsAndReply 验证：mentions 与 reply_to 随 content JSONB 透传与落库。
+func TestMessageMentionsAndReply(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tokenA, idA := register(t, "mrA")
+	tokenB, idB := register(t, "mrB")
+	conv := createDirect(t, tokenA, idB)
+	wsA, wsB := wsDial(t, ctx, tokenA), wsDial(t, ctx, tokenB)
+	defer wsA.CloseNow()
+	defer wsB.CloseNow()
+	time.Sleep(500 * time.Millisecond)
+
+	quote := "quoted-" + randStr()
+	sidQuote := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": quote})
+
+	uniq := "mention-" + randStr()
+	sid := sendContentVia(t, wsA, conv, map[string]any{
+		"type":     0,
+		"text":     "hi @B " + uniq,
+		"mentions": []string{idB},
+		"reply_to": map[string]any{"msg_id": sidQuote, "sender_id": idA, "text": quote},
+	})
+
+	got := awaitPayload(t, wsB, func(p map[string]any) bool {
+		return p["server_msg_id"] == sid
+	}, 8*time.Second)
+	if got == nil {
+		t.Fatal("B 未收到该消息")
+	}
+	c, _ := got["content"].(map[string]any)
+	if mentions, _ := c["mentions"].([]any); len(mentions) != 1 || mentions[0] != idB {
+		t.Fatalf("mentions 未透传: %v", c["mentions"])
+	}
+	if rt, _ := c["reply_to"].(map[string]any); rt == nil || rt["msg_id"] != sidQuote {
+		t.Fatalf("reply_to 未透传: %v", c["reply_to"])
+	}
+
+	// 落库校验
+	var res struct {
+		Messages []struct {
+			ID      string `json:"server_msg_id"`
+			Content struct {
+				Mentions []string `json:"mentions"`
+				ReplyTo  *struct {
+					MsgID string `json:"msg_id"`
+				} `json:"reply_to"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+conv+"/messages?limit=50", tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("history got %d", code)
+	}
+	found := false
+	for _, m := range res.Messages {
+		if m.ID != sid {
+			continue
+		}
+		found = true
+		if len(m.Content.Mentions) != 1 || m.Content.Mentions[0] != idB {
+			t.Fatalf("库中 mentions 丢失: %v", m.Content.Mentions)
+		}
+		if m.Content.ReplyTo == nil || m.Content.ReplyTo.MsgID != sidQuote {
+			t.Fatalf("库中 reply_to 丢失: %+v", m.Content.ReplyTo)
+		}
+	}
+	if !found {
+		t.Fatal("历史未返回该消息")
+	}
+}
+
+// TestMessageSearch 验证：会话内按关键字 ILIKE 检索文本消息。
+func TestMessageSearch(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	tokenA, _ := register(t, "scA")
+	_, idB := register(t, "scB")
+	conv := createDirect(t, tokenA, idB)
+
+	needle := "tiger-" + randStr()
+	sendText(t, tokenA, conv, "decoy-"+randStr())
+	sendText(t, tokenA, conv, needle)
+	sendText(t, tokenA, conv, "another-"+randStr())
+
+	var res struct {
+		Messages []struct {
+			Content struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	q := "/api/v1/conversations/" + conv + "/messages/search?q=tiger"
+	if code := doJSON(t, http.MethodGet, q, tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("search got %d", code)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("搜索未命中已知消息")
+	}
+	hit := false
+	for _, m := range res.Messages {
+		if !strings.Contains(m.Content.Text, "tiger") {
+			t.Fatalf("搜索返回不匹配项: %q", m.Content.Text)
+		}
+		if m.Content.Text == needle {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatal("未搜到目标 needle")
 	}
 }

@@ -17,16 +17,19 @@ const (
 	EventSendMessage = "send_message"
 	EventMarkRead    = "mark_read"
 	EventTyping      = "typing"
-	EventSync        = "sync" // 断线重连后按 last_seq 补拉
+	EventSync        = "sync"           // 断线重连后按 last_seq 补拉
+	EventRecall      = "recall_message" // 撤回一条自己发的消息
+	EventEdit        = "edit_message"   // 编辑一条文本消息
 )
 
 // 服务端 → 客户端 事件类型。
 const (
-	EventNewMessage = "new_message"
-	EventMsgAck     = "msg_ack"
-	EventMsgRead    = "msg_read"
-	EventPresence   = "presence_update"
-	EventError      = "error"
+	EventNewMessage    = "new_message"
+	EventMsgAck        = "msg_ack"
+	EventMsgRead       = "msg_read"
+	EventMessageUpdate = "message_update" // 撤回/编辑后的就地更新
+	EventPresence      = "presence_update"
+	EventError         = "error"
 )
 
 // Encode 将负载包装为信封字节流。

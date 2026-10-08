@@ -2,12 +2,16 @@ package message
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/tss/depth/server/pkg/ws"
 )
 
 // Router 抽象在线消息投递（由 ws.Hub 实现）。返回是否送达至少一个设备。
@@ -148,4 +152,95 @@ func (s *Service) HistoryAfter(ctx context.Context, convID string, afterSeq int6
 		limit = 100
 	}
 	return s.repo.ListAfter(ctx, convID, afterSeq, limit)
+}
+
+// Search 在某会话内按文本关键字检索消息。
+func (s *Service) Search(ctx context.Context, convID, q string, limit int) ([]*Message, error) {
+	if strings.TrimSpace(q) == "" {
+		return []*Message{}, nil
+	}
+	return s.repo.Search(ctx, convID, strings.TrimSpace(q), limit)
+}
+
+// 撤回 / 编辑的时间窗口与校验错误。
+const (
+	actionWindow = 2 * time.Minute
+)
+
+var (
+	ErrNotSender    = errors.New("只能操作自己发送的消息")
+	ErrWindowPassed = errors.New("已超过可操作时间")
+	ErrNotEditable  = errors.New("该消息不可编辑")
+	ErrEmptyText    = errors.New("内容不能为空")
+)
+
+// Recall 撤回一条自己发送且在窗口内的消息：清空正文并广播更新。
+func (s *Service) Recall(ctx context.Context, userID, msgID string) (*Message, error) {
+	m, err := s.repo.GetByID(ctx, msgID)
+	if err != nil {
+		return nil, err
+	}
+	if m.SenderID != userID {
+		return nil, ErrNotSender
+	}
+	if m.Recalled {
+		return m, nil // 幂等
+	}
+	if time.Since(m.CreatedAt) > actionWindow {
+		return nil, ErrWindowPassed
+	}
+	if err := s.repo.Recall(ctx, msgID); err != nil {
+		return nil, err
+	}
+	m.Recalled = true
+	m.Content.Text = ""
+	m.Content.MediaURL = ""
+	s.broadcastUpdate(ctx, m)
+	return m, nil
+}
+
+// Edit 编辑一条自己发送、文本类型且在窗口内的消息。
+func (s *Service) Edit(ctx context.Context, userID, msgID, text string) (*Message, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, ErrEmptyText
+	}
+	m, err := s.repo.GetByID(ctx, msgID)
+	if err != nil {
+		return nil, err
+	}
+	if m.SenderID != userID {
+		return nil, ErrNotSender
+	}
+	if m.Recalled || m.Content.Type != TypeText {
+		return nil, ErrNotEditable
+	}
+	if time.Since(m.CreatedAt) > actionWindow {
+		return nil, ErrWindowPassed
+	}
+	if err := s.repo.UpdateText(ctx, msgID, text); err != nil {
+		return nil, err
+	}
+	m.Content.Text = text
+	s.broadcastUpdate(ctx, m)
+	return m, nil
+}
+
+// broadcastUpdate 向会话全体成员（含发送者各设备）下发 message_update。
+func (s *Service) broadcastUpdate(ctx context.Context, m *Message) {
+	members, err := s.chat.Members(ctx, m.ConversationID)
+	if err != nil {
+		s.log.Warn("members for update broadcast failed", "conv", m.ConversationID, "err", err.Error())
+		return
+	}
+	data, err := ws.Encode(ws.EventMessageUpdate, m)
+	if err != nil {
+		s.log.Error("encode message_update failed", "err", err.Error())
+		return
+	}
+	for _, uid := range members {
+		if s.hub.IsOnline(uid) {
+			s.hub.SendToUser(uid, data)
+		}
+	}
 }

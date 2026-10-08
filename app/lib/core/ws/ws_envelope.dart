@@ -31,11 +31,14 @@ class WsEvents {
   static const String markRead = 'mark_read';
   static const String typing = 'typing';
   static const String sync = 'sync';
+  static const String recallMessage = 'recall_message';
+  static const String editMessage = 'edit_message';
 
   // 下行：服务端 -> 客户端
   static const String newMessage = 'new_message';
   static const String msgAck = 'msg_ack';
   static const String msgRead = 'msg_read';
+  static const String messageUpdate = 'message_update';
   static const String presenceUpdate = 'presence_update';
   static const String syncResult = 'sync_result';
   static const String error = 'error';

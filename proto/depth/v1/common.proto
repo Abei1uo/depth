@@ -22,11 +22,20 @@ enum MessageType {
 }
 
 // MessageContent 消息正文负载。
-// 对应后端 message.Content（JSON: type/text/media_url/thumb_url/size）。
+// 对应后端 message.Content（JSON: type/text/media_url/thumb_url/size/reply_to/mentions）。
 message MessageContent {
   MessageType type = 1;
   string text = 2;
   string media_url = 3;
   string thumb_url = 4;
-  int64 size = 5; // 字节数（媒体消息）
+  int64 size = 5;     // 字节数（媒体消息）
+  ReplyInfo reply_to = 6; // 引用回复时非空
+  repeated string mentions = 7; // 被 @ 的成员用户 ID
+}
+
+// ReplyInfo 被引用消息的展示快照。
+message ReplyInfo {
+  string msg_id = 1;
+  string sender_id = 2;
+  string text = 3; // 引用正文摘要
 }

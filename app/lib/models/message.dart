@@ -7,6 +7,31 @@ class MessageType {
   static const int system = 4;
 }
 
+/// 被引用消息的展示快照，对应服务端 message.ReplyInfo。
+class ReplyInfo {
+  const ReplyInfo({
+    required this.msgId,
+    required this.senderId,
+    required this.text,
+  });
+
+  final String msgId;
+  final String senderId;
+  final String text;
+
+  factory ReplyInfo.fromJson(Map<String, dynamic> json) => ReplyInfo(
+        msgId: json['msg_id'] as String? ?? '',
+        senderId: json['sender_id'] as String? ?? '',
+        text: json['text'] as String? ?? '',
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'msg_id': msgId,
+        'sender_id': senderId,
+        'text': text,
+      };
+}
+
 /// 消息正文负载，对应服务端 message.Content。
 class MessageContent {
   const MessageContent({
@@ -15,6 +40,8 @@ class MessageContent {
     this.mediaUrl = '',
     this.thumbUrl = '',
     this.size = 0,
+    this.replyTo,
+    this.mentions = const <String>[],
   });
 
   final int type;
@@ -22,6 +49,8 @@ class MessageContent {
   final String mediaUrl;
   final String thumbUrl;
   final int size;
+  final ReplyInfo? replyTo;
+  final List<String> mentions;
 
   factory MessageContent.fromJson(Map<String, dynamic> json) => MessageContent(
         type: (json['type'] as num? ?? 0).toInt(),
@@ -29,6 +58,10 @@ class MessageContent {
         mediaUrl: json['media_url'] as String? ?? '',
         thumbUrl: json['thumb_url'] as String? ?? '',
         size: (json['size'] as num? ?? 0).toInt(),
+        replyTo: json['reply_to'] is Map<String, dynamic>
+            ? ReplyInfo.fromJson(json['reply_to'] as Map<String, dynamic>)
+            : null,
+        mentions: (json['mentions'] as List?)?.cast<String>() ?? const <String>[],
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -37,6 +70,8 @@ class MessageContent {
         if (mediaUrl.isNotEmpty) 'media_url': mediaUrl,
         if (thumbUrl.isNotEmpty) 'thumb_url': thumbUrl,
         if (size != 0) 'size': size,
+        if (replyTo != null) 'reply_to': replyTo!.toJson(),
+        if (mentions.isNotEmpty) 'mentions': mentions,
       };
 
   factory MessageContent.text(String value) =>
@@ -53,6 +88,7 @@ class ChatMessage {
     required this.seq,
     required this.content,
     required this.createdAt,
+    this.recalled = false,
   });
 
   final String serverMsgId;
@@ -62,6 +98,7 @@ class ChatMessage {
   final int seq;
   final MessageContent content;
   final DateTime createdAt;
+  final bool recalled;
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
         serverMsgId: json['server_msg_id'] as String? ?? '',
@@ -73,10 +110,11 @@ class ChatMessage {
             (json['content'] as Map<String, dynamic>?) ?? const <String, dynamic>{}),
         createdAt: DateTime.tryParse(json['timestamp'] as String? ?? '') ??
             DateTime.now(),
+        recalled: json['recalled'] as bool? ?? false,
       );
 }
 
-/// 发送回执，对应服务端 message.Ack。
+/// 消息发送回执，对应服务端 message.Ack。
 class MessageAck {
   const MessageAck({
     required this.clientMsgId,

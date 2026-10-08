@@ -49,6 +49,8 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   ConversationDetail? _detail; // 会话详情（标题/成员/对方）
   String? _peerId; // 单聊对方用户 ID
   String? _error;
+  ReplyInfo? _replyTo; // 正在引用回复的目标
+  final List<String> _mentions = <String>[]; // 当前待发送的 @ 成员 ID
   StreamSubscription<WsEnvelope>? _wsSub;
   StreamSubscription<bool>? _statusSub;
   // 在 initState 捕获会话列表控制器，以便在 dispose 中安全刷新（避免用失效的 ref）。
@@ -447,6 +449,15 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
           });
         }
         break;
+      case WsEvents.messageUpdate:
+        final m = ChatMessage.fromJson(env.payload);
+        if (m.conversationId == widget.conversationId) _replaceMessage(m);
+        break;
+      case WsEvents.error:
+        if (!mounted) break;
+        final msg = env.payload['message'] as String? ?? '操作失败';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        break;
       default:
         break;
     }
@@ -514,8 +525,17 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     _sendContent(MessageContent.text(text));
   }
 
-  /// 发送一条内容（文本或媒体）：走 WS + 本地乐观上屏。
+  /// 发送一条内容（文本或媒体）：合入当前引用/@，走 WS + 本地乐观上屏。
   void _sendContent(MessageContent content) {
+    final composed = MessageContent(
+      type: content.type,
+      text: content.text,
+      mediaUrl: content.mediaUrl,
+      thumbUrl: content.thumbUrl,
+      size: content.size,
+      replyTo: _replyTo,
+      mentions: List<String>.from(_mentions),
+    );
     final clientMsgId = _genClientMsgId();
 
     ref.read(wsClientProvider).send(WsEnvelope(
@@ -523,7 +543,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
           payload: <String, dynamic>{
             'client_msg_id': clientMsgId,
             'conversation_id': widget.conversationId,
-            'content': content.toJson(),
+            'content': composed.toJson(),
           },
         ));
 
@@ -534,10 +554,14 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       conversationId: widget.conversationId,
       senderId: _meId,
       seq: 0,
-      content: content,
+      content: composed,
       createdAt: DateTime.now(),
     );
-    setState(() => _messages.add(optimistic));
+    setState(() {
+      _messages.add(optimistic);
+      _replyTo = null;
+      _mentions.clear();
+    });
     _scrollToBottom();
   }
 
@@ -597,6 +621,195 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     ));
   }
 
+  String _memberName(String id) {
+    for (final m in _detail?.members ?? const <ChatMember>[]) {
+      if (m.userId == id) {
+        return m.displayName.isEmpty ? m.username : m.displayName;
+      }
+    }
+    return id == _meId ? '我' : '对方';
+  }
+
+  String _summaryOf(ChatMessage m) {
+    final c = m.content;
+    switch (c.type) {
+      case MessageType.image:
+        return '[图片]';
+      case MessageType.file:
+        return '[文件]';
+      case MessageType.voice:
+        return '[语音]';
+      default:
+        return c.text.isEmpty ? '[消息]' : c.text;
+    }
+  }
+
+  void _setReply(ChatMessage m) {
+    setState(() {
+      _replyTo = ReplyInfo(
+        msgId: m.serverMsgId,
+        senderId: m.senderId,
+        text: _summaryOf(m),
+      );
+    });
+  }
+
+  /// 按 server_msg_id 就地替换一条消息（撤回/编辑的本地乐观更新）。
+  void _replaceMessage(ChatMessage updated) {
+    final idx = _messages.indexWhere((x) =>
+        updated.serverMsgId.isNotEmpty && x.serverMsgId == updated.serverMsgId);
+    if (idx >= 0) setState(() => _messages[idx] = updated);
+  }
+
+  void _recallMsg(ChatMessage m) {
+    if (m.serverMsgId.isEmpty) return;
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.recallMessage,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'server_msg_id': m.serverMsgId,
+          },
+        ));
+    _replaceMessage(ChatMessage(
+      serverMsgId: m.serverMsgId,
+      clientMsgId: m.clientMsgId,
+      conversationId: m.conversationId,
+      senderId: m.senderId,
+      seq: m.seq,
+      content: MessageContent(
+          type: m.content.type, replyTo: m.content.replyTo),
+      createdAt: m.createdAt,
+      recalled: true,
+    ));
+  }
+
+  Future<void> _editMsg(ChatMessage m) async {
+    if (m.serverMsgId.isEmpty) return;
+    final controller = TextEditingController(text: m.content.text);
+    final text = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('编辑消息'),
+        content: TextField(
+            controller: controller, autofocus: true, minLines: 1, maxLines: 4),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (text == null || text.isEmpty || text == m.content.text) return;
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.editMessage,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'server_msg_id': m.serverMsgId,
+            'text': text,
+          },
+        ));
+    _replaceMessage(ChatMessage(
+      serverMsgId: m.serverMsgId,
+      clientMsgId: m.clientMsgId,
+      conversationId: m.conversationId,
+      senderId: m.senderId,
+      seq: m.seq,
+      content: MessageContent(
+          type: MessageType.text,
+          text: text,
+          replyTo: m.content.replyTo,
+          mentions: m.content.mentions),
+      createdAt: m.createdAt,
+    ));
+  }
+
+  Future<void> _addMention() async {
+    final d = _detail;
+    if (d == null) return;
+    final cands = d.members.where((m) => m.userId != _meId).toList();
+    if (cands.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('没有可@的成员')));
+      }
+      return;
+    }
+    final picked = await showModalBottomSheet<ChatMember>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: cands
+              .map((m) => ListTile(
+                    leading: CircleAvatar(
+                        child: Text(m.displayName.characters.first)),
+                    title: Text(m.displayName.isEmpty ? m.username : m.displayName),
+                    subtitle: Text('@${m.username}'),
+                    onTap: () => Navigator.of(ctx).pop(m),
+                  ))
+              .toList(),
+        ),
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      _input.text = '${_input.text}@${picked.username} ';
+      _input.selection = TextSelection.collapsed(offset: _input.text.length);
+      if (!_mentions.contains(picked.userId)) _mentions.add(picked.userId);
+    });
+  }
+
+  void _showBubbleMenu(ChatMessage m) {
+    final isMe = m.senderId == _meId;
+    final canAct = isMe && m.serverMsgId.isNotEmpty && !m.recalled;
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.reply),
+              title: const Text('回复'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _setReply(m);
+              },
+            ),
+            if (canAct && m.content.type == MessageType.text)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('编辑'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _editMsg(m);
+                },
+              ),
+            if (canAct)
+              ListTile(
+                leading: const Icon(Icons.undo),
+                title: const Text('撤回'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _recallMsg(m);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openSearch() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _SearchSheet(conversationId: widget.conversationId),
+    );
+  }
+
   String _genClientMsgId() =>
       '${DateTime.now().microsecondsSinceEpoch}-${_random.nextInt(0x7fffffff)}';
 
@@ -626,6 +839,11 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
               ),
               onPressed: null,
             ),
+          IconButton(
+            tooltip: '搜索消息',
+            icon: const Icon(Icons.search),
+            onPressed: _openSearch,
+          ),
           IconButton(
             tooltip: '成员',
             icon: const Icon(Icons.people_outline),
@@ -675,8 +893,17 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                       : const SizedBox(height: 8);
                                 }
                                 final m = _messages[i - 1];
+                                final reply = m.content.replyTo;
                                 return _Bubble(
-                                    message: m, isMe: m.senderId == _meId);
+                                  message: m,
+                                  isMe: m.senderId == _meId,
+                                  replyPreview: reply == null
+                                      ? null
+                                      : '${_memberName(reply.senderId)}: ${reply.text}',
+                                  mentionsMe:
+                                      m.content.mentions.contains(_meId),
+                                  onLongPress: () => _showBubbleMenu(m),
+                                );
                               },
                             ),
                     ),
@@ -689,11 +916,18 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                               style: TextStyle(fontSize: 12)),
                         ),
                       ),
+                    if (_replyTo != null)
+                      _ReplyBanner(
+                        preview:
+                            '${_memberName(_replyTo!.senderId)}: ${_replyTo!.text}',
+                        onCancel: () => setState(() => _replyTo = null),
+                      ),
                     _InputBar(
                         controller: _input,
                         onSend: _send,
                         onChanged: _notifyTyping,
-                        onAttach: _pickAttachment),
+                        onAttach: _pickAttachment,
+                        onMention: _addMention),
                   ],
                 ),
     );
@@ -701,10 +935,19 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
 }
 
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message, required this.isMe});
+  const _Bubble({
+    required this.message,
+    required this.isMe,
+    this.replyPreview,
+    this.mentionsMe = false,
+    this.onLongPress,
+  });
 
   final ChatMessage message;
   final bool isMe;
+  final String? replyPreview;
+  final bool mentionsMe;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -712,45 +955,77 @@ class _Bubble extends StatelessWidget {
     final align = isMe ? TextAlign.right : TextAlign.left;
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        constraints: const BoxConstraints(maxWidth: 320),
-        decoration: BoxDecoration(
-          color: isMe ? scheme.primaryContainer : scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          crossAxisAlignment:
-              isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          children: [
-            _messageBody(context, message.content, align),
-            const SizedBox(height: 2),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_formatTime(message.createdAt),
-                    style: Theme.of(context).textTheme.labelSmall),
-                if (isMe) ...[
-                  const SizedBox(width: 4),
-                  Icon(
-                    message.serverMsgId.isEmpty
-                        ? Icons.schedule
-                        : Icons.check_circle_outline,
-                    size: 12,
-                    color: Theme.of(context)
-                        .textTheme
-                        .labelSmall
-                        ?.color,
+      child: GestureDetector(
+        onLongPress: onLongPress,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          constraints: const BoxConstraints(maxWidth: 320),
+          decoration: BoxDecoration(
+            color:
+                isMe ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment:
+                isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              if (message.recalled)
+                Text(isMe ? '你撤回了一条消息' : '对方撤回了一条消息',
+                    style: const TextStyle(fontStyle: FontStyle.italic))
+              else ...[
+                if (replyPreview != null) _replyBox(context, replyPreview!),
+                if (mentionsMe)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 4),
+                    child: Chip(
+                        label: Text('@我'),
+                        visualDensity: VisualDensity.compact),
                   ),
-                ],
+                _messageBody(context, message.content, align),
               ],
-            ),
-          ],
+              const SizedBox(height: 2),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_formatTime(message.createdAt),
+                      style: Theme.of(context).textTheme.labelSmall),
+                  if (isMe) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      message.serverMsgId.isEmpty
+                          ? Icons.schedule
+                          : Icons.check_circle_outline,
+                      size: 12,
+                      color: Theme.of(context).textTheme.labelSmall?.color,
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+/// 气泡内的引用摘要块。
+Widget _replyBox(BuildContext context, String preview) {
+  final scheme = Theme.of(context).colorScheme;
+  return Container(
+    margin: const EdgeInsets.only(bottom: 6),
+    padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+    decoration: BoxDecoration(
+      border: Border(left: BorderSide(color: scheme.primary, width: 3)),
+      color: scheme.surfaceContainerHighest,
+      borderRadius: const BorderRadius.all(Radius.circular(4)),
+    ),
+    child: Text(preview,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodySmall),
+  );
 }
 
 class _InputBar extends StatelessWidget {
@@ -758,12 +1033,14 @@ class _InputBar extends StatelessWidget {
       {required this.controller,
       required this.onSend,
       this.onChanged,
-      this.onAttach});
+      this.onAttach,
+      this.onMention});
 
   final TextEditingController controller;
   final VoidCallback onSend;
   final VoidCallback? onChanged;
   final VoidCallback? onAttach;
+  final VoidCallback? onMention;
 
   @override
   Widget build(BuildContext context) {
@@ -776,6 +1053,11 @@ class _InputBar extends StatelessWidget {
               IconButton(
                   onPressed: onAttach,
                   icon: const Icon(Icons.add_circle_outline)),
+            if (onMention != null)
+              IconButton(
+                  tooltip: '@提醒',
+                  onPressed: onMention,
+                  icon: const Icon(Icons.alternate_email)),
             Expanded(
               child: TextField(
                 controller: controller,
@@ -799,6 +1081,144 @@ class _InputBar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 输入框上方的引用预览条（可取消）。
+class _ReplyBanner extends StatelessWidget {
+  const _ReplyBanner({required this.preview, required this.onCancel});
+
+  final String preview;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+        child: Row(
+          children: [
+            Icon(Icons.reply, size: 16, color: scheme.primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('回复 $preview',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall),
+            ),
+            IconButton(
+                icon: const Icon(Icons.close, size: 18), onPressed: onCancel),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 会话内消息搜索面板。
+class _SearchSheet extends ConsumerStatefulWidget {
+  const _SearchSheet({required this.conversationId});
+
+  final String conversationId;
+
+  @override
+  ConsumerState<_SearchSheet> createState() => _SearchSheetState();
+}
+
+class _SearchSheetState extends ConsumerState<_SearchSheet> {
+  final _q = TextEditingController();
+  List<ChatMessage> _results = const [];
+  bool _loading = false;
+  bool _searched = false;
+
+  @override
+  void dispose() {
+    _q.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run() async {
+    final keyword = _q.text.trim();
+    if (keyword.isEmpty) {
+      setState(() => _results = const []);
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      final list =
+          await ref.read(chatRepositoryProvider).search(widget.conversationId, keyword);
+      if (mounted) {
+        setState(() {
+          _results = list;
+          _loading = false;
+          _searched = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: SafeArea(
+          child: SizedBox(
+            height: 460,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _q,
+                          autofocus: true,
+                          onSubmitted: (_) => _run(),
+                          decoration: const InputDecoration(
+                            labelText: '搜索会话内消息',
+                            isDense: true,
+                            prefixIcon: Icon(Icons.search),
+                          ),
+                        ),
+                      ),
+                      TextButton(onPressed: _run, child: const Text('搜索')),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: _loading
+                      ? const Center(child: CircularProgressIndicator())
+                      : _results.isEmpty
+                          ? Center(
+                              child: Text(
+                                  _searched ? '没有匹配的消息' : '输入关键字开始搜索',
+                                  style:
+                                      Theme.of(context).textTheme.bodyMedium),
+                            )
+                          : ListView.builder(
+                              itemCount: _results.length,
+                              itemBuilder: (context, i) {
+                                final m = _results[i];
+                                return ListTile(
+                                  dense: true,
+                                  title: Text(m.content.text,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis),
+                                  subtitle: Text(_formatTime(m.createdAt)),
+                                );
+                              },
+                            ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
 }
 
 /// 断线重连横幅：WebSocket 断开时显示于消息区顶部。

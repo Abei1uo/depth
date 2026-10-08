@@ -109,6 +109,10 @@ func (s *WSServer) dispatch(ctx context.Context, client *ws.Client, env *ws.Enve
 		return s.handleMarkRead(ctx, client, env)
 	case ws.EventTyping:
 		return s.handleTyping(ctx, client, env)
+	case ws.EventRecall:
+		return s.handleRecall(ctx, client, env)
+	case ws.EventEdit:
+		return s.handleEdit(ctx, client, env)
 	default:
 		return nil, errors.New("未知事件类型: " + env.Type)
 	}
@@ -228,6 +232,44 @@ func (s *WSServer) broadcastPresence(ctx context.Context, userID string, online 
 			s.hub.SendToUser(uid, data)
 		}
 	}
+}
+
+// handleRecall 处理上行 recall_message：服务端校验归属与时间窗后撤回，
+// 成功时由消息服务广播 message_update，本函数无需回包。
+func (s *WSServer) handleRecall(ctx context.Context, client *ws.Client, env *ws.Envelope) ([]byte, error) {
+	if s.msgSvc == nil {
+		return nil, errors.New("消息服务尚未就绪")
+	}
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		ServerMsgID    string `json:"server_msg_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &req); err != nil || req.ServerMsgID == "" {
+		return nil, errors.New("recall_message 负载格式错误")
+	}
+	if _, err := s.msgSvc.Recall(ctx, client.UserID(), req.ServerMsgID); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// handleEdit 处理上行 edit_message。
+func (s *WSServer) handleEdit(ctx context.Context, client *ws.Client, env *ws.Envelope) ([]byte, error) {
+	if s.msgSvc == nil {
+		return nil, errors.New("消息服务尚未就绪")
+	}
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		ServerMsgID    string `json:"server_msg_id"`
+		Text           string `json:"text"`
+	}
+	if err := json.Unmarshal(env.Payload, &req); err != nil || req.ServerMsgID == "" {
+		return nil, errors.New("edit_message 负载格式错误")
+	}
+	if _, err := s.msgSvc.Edit(ctx, client.UserID(), req.ServerMsgID, req.Text); err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
 // EncodeMessage 是消息下行编码器，供 message.Service 分发时调用。

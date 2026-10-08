@@ -99,6 +99,24 @@ func (h *Handler) Messages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"messages": msgs})
 }
 
+// Search 处理 GET /api/v1/conversations/:id/messages/search?q=&limit=
+// —— 会话内按文本关键字检索（仅未撤回的文本消息）。
+func (h *Handler) Search(c *gin.Context) {
+	convID := c.Param("id")
+	q := c.Query("q")
+	limit := 50
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	msgs, err := h.msgSvc.Search(c.Request.Context(), convID, q, limit)
+	if err != nil {
+		slog.Error("search messages failed", "conv", convID, "q", q, "err", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索消息失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": msgs})
+}
+
 // Get 处理 GET /api/v1/conversations/:id —— 返回会话详情与成员。
 func (h *Handler) Get(c *gin.Context) {
 	convID := c.Param("id")
@@ -122,6 +140,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/conversations", h.List)
 	rg.GET("/conversations/:id", h.Get)
 	rg.GET("/conversations/:id/messages", h.Messages)
+	rg.GET("/conversations/:id/messages/search", h.Search)
 
 	rg.POST("/conversations/:id/rename", h.Rename)
 	rg.POST("/conversations/:id/members/add", h.AddMembers)
