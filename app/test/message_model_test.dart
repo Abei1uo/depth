@@ -40,5 +40,35 @@ void main() {
       expect(m.recalled, isTrue);
       expect(m.content.type, MessageType.text);
     });
+
+    test('ChatMessage copyWith 可切换 sendFailed 且保留其它字段', () {
+      final base = ChatMessage(
+        serverMsgId: '',
+        clientMsgId: 'c1',
+        conversationId: 'v',
+        senderId: 'me',
+        seq: 0,
+        content: MessageContent.text('t'),
+        createdAt: DateTime(2024),
+      );
+      expect(base.sendFailed, isFalse);
+
+      final f = base.copyWith(sendFailed: true);
+      expect(f.sendFailed, isTrue);
+      expect(f.clientMsgId, 'c1');
+
+      final acked = f.copyWith(serverMsgId: 'srv', seq: 5, sendFailed: false);
+      expect(acked.serverMsgId, 'srv');
+      expect(acked.seq, 5);
+      expect(acked.sendFailed, isFalse);
+    });
+
+    test('MessageContent 语音 duration 往返', () {
+      const c =
+          MessageContent(type: MessageType.voice, mediaUrl: 'u', duration: 9);
+      final j = c.toJson();
+      expect(j['duration'], 9);
+      expect(MessageContent.fromJson(j).duration, 9);
+    });
   });
 }

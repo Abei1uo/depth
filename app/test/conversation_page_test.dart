@@ -281,4 +281,44 @@ void main() {
     expect(env!.payload['server_msg_id'], 'm1');
     expect(find.text('hello'), findsNothing);
   });
+
+  testWidgets('发送超时未 ack 标记失败并可点击重发', (tester) async {
+    final ws = FakeWsClient();
+    final repo = FakeChatRepository();
+    await tester.pumpWidget(_wrap(ws, repo));
+    await _settle(tester);
+
+    await tester.enterText(find.byType(TextField), 'will-fail');
+    await tester.tap(find.byIcon(Icons.send));
+    await _settle(tester);
+    expect(find.byIcon(Icons.schedule), findsOneWidget);
+
+    // 推进超过 15s 发送超时→失败图标。
+    await tester.pump(const Duration(seconds: 16));
+    expect(find.byIcon(Icons.error_outline), findsOneWidget);
+
+    // 点击失败气泡重发。
+    final before =
+        ws.sent.where((e) => e.type == WsEvents.sendMessage).length;
+    await tester.tap(find.text('will-fail'));
+    await _settle(tester);
+    final after = ws.sent.where((e) => e.type == WsEvents.sendMessage).length;
+    expect(after, greaterThan(before));
+  });
+
+  test('computeUnreadAnchor 定位最早未读', () {
+    ChatMessage m(String id, String sender) => ChatMessage(
+          serverMsgId: id,
+          clientMsgId: '',
+          conversationId: _convId,
+          senderId: sender,
+          seq: 1,
+          content: MessageContent.text('t'),
+          createdAt: DateTime(2024),
+        );
+    final list = [m('s1', 'peer'), m('s2', 'me'), m('s3', 'peer'), m('s4', 'peer')];
+    expect(computeUnreadAnchor(list, 0, 'me'), isNull);
+    expect(computeUnreadAnchor(list, 2, 'me'), 's3');
+    expect(computeUnreadAnchor(list, 3, 'me'), 's1');
+  });
 }

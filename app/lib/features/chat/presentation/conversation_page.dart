@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../../../core/api/api_exception.dart';
+import '../../../core/utils/draft_store.dart';
 import '../../../core/utils/image_util.dart';
 import '../../../core/presence/presence_controller.dart';
 import '../../../core/ws/ws_client.dart';
@@ -56,6 +57,13 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   String? _error;
   ReplyInfo? _replyTo; // 正在引用回复的目标
   final List<String> _mentions = <String>[]; // 当前待发送的 @ 成员 ID
+  static const Duration _sendTimeout = Duration(seconds: 15);
+  final Map<String, Timer> _ackTimers = <String, Timer>{}; // clientMsgId -> 超时计时
+  int _unreadAtOpen = 0; // 打开时快照的未读数（用于未读分隔线）
+  String? _unreadAnchorId; // 最早一条未读消息的 serverMsgId
+  final Map<String, GlobalKey> _msgKeys = <String, GlobalKey>{}; // serverMsgId -> 气泡键
+  DraftStore? _draft; // 会话草稿持久化（平台通道不可用时为 null）
+  Timer? _draftSaveTimer; // 输入防抖保存
   StreamSubscription<WsEnvelope>? _wsSub;
   StreamSubscription<bool>? _statusSub;
   // 在 initState 捕获会话列表控制器，以便在 dispose 中安全刷新（避免用失效的 ref）。
@@ -69,6 +77,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     _conversations = ref.read(conversationsProvider.notifier);
     _loadHistory();
     _loadDetail();
+    _initDraft();
     _scroll.addListener(_onScroll);
     final client = ref.read(wsClientProvider);
     _online = client.isConnected;
@@ -91,6 +100,12 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     _scroll.dispose();
     _typingStop?.cancel();
     _typingExpire?.cancel();
+    _draftSaveTimer?.cancel();
+    // 取消未触发的发送超时计时（不使用 ref）。
+    for (final t in _ackTimers.values) {
+      t.cancel();
+    }
+    _ackTimers.clear();
     // 离开会话后刷新列表，以同步已读后的未读数。
     _conversations?.reload();
     super.dispose();
@@ -131,6 +146,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
         _loading = false;
       });
       _scrollToBottom();
+      _computeUnreadAnchor();
       _markRead();
     } on ApiException catch (e) {
       setState(() {
@@ -489,6 +505,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
         break;
       case WsEvents.msgAck:
         final ack = MessageAck.fromJson(env.payload);
+        _ackTimers.remove(ack.clientMsgId)?.cancel();
         final idx =
             _messages.indexWhere((x) => x.clientMsgId == ack.clientMsgId);
         if (idx >= 0) {
@@ -627,11 +644,22 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       mediaUrl: content.mediaUrl,
       thumbUrl: content.thumbUrl,
       size: content.size,
+      duration: content.duration,
       replyTo: _replyTo,
       mentions: List<String>.from(_mentions),
     );
-    final clientMsgId = _genClientMsgId();
+    _sendComposed(composed);
+    setState(() {
+      _replyTo = null;
+      _mentions.clear();
+    });
+  }
 
+  /// 实际发送已组合好的内容：WS 上行 + 乐观上屏 + 启动 ack 超时计时。
+  void _sendComposed(MessageContent composed) {
+    final clientMsgId = _genClientMsgId();
+    _draftSaveTimer?.cancel();
+    _draft?.clear(widget.conversationId);
     ref.read(wsClientProvider).send(WsEnvelope(
           type: WsEvents.sendMessage,
           payload: <String, dynamic>{
@@ -651,12 +679,90 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       content: composed,
       createdAt: DateTime.now(),
     );
-    setState(() {
-      _messages.add(optimistic);
-      _replyTo = null;
-      _mentions.clear();
-    });
+    setState(() => _messages.add(optimistic));
+    _ackTimers[clientMsgId]?.cancel();
+    _ackTimers[clientMsgId] =
+        Timer(_sendTimeout, () => _markSendFailed(clientMsgId));
     _scrollToBottom();
+  }
+
+  /// 超时未收到 ack：将仍处于发送中的该消息标为失败。
+  void _markSendFailed(String clientMsgId) {
+    _ackTimers.remove(clientMsgId);
+    final idx = _messages.indexWhere((x) =>
+        x.clientMsgId == clientMsgId && x.serverMsgId.isEmpty);
+    if (idx >= 0) {
+      setState(() => _messages[idx] = _messages[idx].copyWith(sendFailed: true));
+    }
+  }
+
+  /// 重发一条失败消息：移除旧的失败气泡，用原内容重新发送。
+  void _resend(ChatMessage m) {
+    _ackTimers.remove(m.clientMsgId)?.cancel();
+    setState(
+        () => _messages.removeWhere((x) => x.clientMsgId == m.clientMsgId));
+    _sendComposed(m.content);
+  }
+
+  GlobalKey _keyFor(String serverMsgId) =>
+      _msgKeys.putIfAbsent(serverMsgId, GlobalKey.new);
+
+  /// 计算未读锚点：从列表末尾回溯 _unreadAtOpen 条他人消息，最早那条为分隔线位置。
+  void _computeUnreadAnchor() {
+    _unreadAtOpen = 0;
+    final convs = ref.read(conversationsProvider).value;
+    if (convs != null) {
+      for (final c in convs) {
+        if (c.id == widget.conversationId) {
+          _unreadAtOpen = c.unread;
+          break;
+        }
+      }
+    }
+    if (_unreadAtOpen <= 0) {
+      _unreadAnchorId = null;
+      return;
+    }
+    _unreadAnchorId = computeUnreadAnchor(_messages, _unreadAtOpen, _meId);
+  }
+
+  /// 点击引用块→滚动定位到被引用消息（未渲染则提示）。
+  void _jumpToQuote(String serverMsgId) {
+    if (serverMsgId.isEmpty) return;
+    final ctx = _msgKeys[serverMsgId]?.currentContext;
+    if (ctx == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('引用的消息未加载（可上滑加载更多）')));
+      }
+      return;
+    }
+    Scrollable.ensureVisible(ctx,
+        alignment: 0.3, duration: const Duration(milliseconds: 250));
+  }
+
+  /// 初始化草稿存储（平台通道不可用时静默降级），并恢复上次未发内容。
+  Future<void> _initDraft() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      if (!mounted) return;
+      setState(() => _draft = DraftStore(dir));
+      final saved = await _draft!.load(widget.conversationId);
+      if (mounted && saved.isNotEmpty && _input.text.isEmpty) {
+        _input.text = saved;
+      }
+    } catch (_) {
+      // 平台通道不可用（如 widget 测试）时忽略草稿功能。
+    }
+  }
+
+  /// 输入变化：同时驱动 typing 与草稿防抖保存。
+  void _onInputChanged() {
+    _notifyTyping();
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = Timer(const Duration(milliseconds: 400), () {
+      _draft?.save(widget.conversationId, _input.text.trim());
+    });
   }
 
   /// 选择图片/文件：上传到对象存储拿 url，再以媒体消息发送。
@@ -1191,7 +1297,10 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                 }
                                 final m = _messages[i - 1];
                                 final reply = m.content.replyTo;
-                                return _Bubble(
+                                final bubble = _Bubble(
+                                  key: m.serverMsgId.isEmpty
+                                      ? null
+                                      : _keyFor(m.serverMsgId),
                                   message: m,
                                   isMe: m.senderId == _meId,
                                   replyPreview: reply == null
@@ -1202,8 +1311,45 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                   read: m.senderId == _meId &&
                                       m.seq > 0 &&
                                       m.seq <= _peerReadSeq,
+                                  failed: m.sendFailed,
                                   onLongPress: () => _showBubbleMenu(m),
+                                  onResend: () => _resend(m),
+                                  onReplyTap: reply == null
+                                      ? null
+                                      : () => _jumpToQuote(reply.msgId),
                                 );
+                                if (_unreadAnchorId != null &&
+                                    m.serverMsgId == _unreadAnchorId) {
+                                  return Column(
+                                    children: [
+                                      Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 8),
+                                        child: Row(
+                                          children: [
+                                            const Expanded(
+                                                child: Divider()),
+                                            Padding(
+                                              padding: const EdgeInsets
+                                                  .symmetric(horizontal: 8),
+                                              child: Text('未读消息',
+                                                  style: TextStyle(
+                                                      fontSize: 11,
+                                                      color: Theme.of(context)
+                                                          .textTheme
+                                                          .labelSmall
+                                                          ?.color)),
+                                            ),
+                                            const Expanded(
+                                                child: Divider()),
+                                          ],
+                                        ),
+                                      ),
+                                      bubble,
+                                    ],
+                                  );
+                                }
+                                return bubble;
                               },
                             ),
                     ),
@@ -1225,7 +1371,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                     _InputBar(
                         controller: _input,
                         onSend: _send,
-                        onChanged: _notifyTyping,
+                        onChanged: _onInputChanged,
                         onAttach: _pickAttachment,
                         onMention: _addMention),
                   ],
@@ -1234,14 +1380,35 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   }
 }
 
+/// 从列表末尾回溯 [unread] 条他人未撤回消息，返回最早那条的 serverMsgId（未读分隔线锚点）。
+String? computeUnreadAnchor(
+    List<ChatMessage> msgs, int unread, String meId) {
+  if (unread <= 0) return null;
+  int seen = 0;
+  String? anchor;
+  for (int i = msgs.length - 1; i >= 0; i--) {
+    final m = msgs[i];
+    if (m.senderId != meId && !m.recalled && m.serverMsgId.isNotEmpty) {
+      seen++;
+      anchor = m.serverMsgId;
+      if (seen >= unread) break;
+    }
+  }
+  return anchor;
+}
+
 class _Bubble extends StatelessWidget {
   const _Bubble({
+    super.key,
     required this.message,
     required this.isMe,
     this.replyPreview,
     this.mentionsMe = false,
     this.read = false,
+    this.failed = false,
     this.onLongPress,
+    this.onReplyTap,
+    this.onResend,
   });
 
   final ChatMessage message;
@@ -1249,7 +1416,10 @@ class _Bubble extends StatelessWidget {
   final String? replyPreview;
   final bool mentionsMe;
   final bool read;
+  final bool failed;
   final VoidCallback? onLongPress;
+  final VoidCallback? onReplyTap;
+  final VoidCallback? onResend;
 
   @override
   Widget build(BuildContext context) {
@@ -1259,6 +1429,7 @@ class _Bubble extends StatelessWidget {
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onLongPress: onLongPress,
+        onTap: (failed && isMe) ? onResend : null,
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1276,7 +1447,8 @@ class _Bubble extends StatelessWidget {
                 Text(isMe ? '你撤回了一条消息' : '对方撤回了一条消息',
                     style: const TextStyle(fontStyle: FontStyle.italic))
               else ...[
-                if (replyPreview != null) _replyBox(context, replyPreview!),
+                if (replyPreview != null)
+                  _replyBox(context, replyPreview!, onTap: onReplyTap),
                 if (mentionsMe)
                   const Padding(
                     padding: EdgeInsets.only(bottom: 4),
@@ -1294,17 +1466,21 @@ class _Bubble extends StatelessWidget {
                       style: Theme.of(context).textTheme.labelSmall),
                   if (isMe) ...[
                     const SizedBox(width: 4),
-                    Icon(
-                      message.serverMsgId.isEmpty
-                          ? Icons.schedule
-                          : (read
-                              ? Icons.done_all
-                              : Icons.check_circle_outline),
-                      size: 12,
-                      color: read
-                          ? Theme.of(context).colorScheme.primary
-                          : Theme.of(context).textTheme.labelSmall?.color,
-                    ),
+                    if (failed)
+                      const Icon(Icons.error_outline,
+                          size: 14, color: Colors.red)
+                    else
+                      Icon(
+                        message.serverMsgId.isEmpty
+                            ? Icons.schedule
+                            : (read
+                                ? Icons.done_all
+                                : Icons.check_circle_outline),
+                        size: 12,
+                        color: read
+                            ? Theme.of(context).colorScheme.primary
+                            : Theme.of(context).textTheme.labelSmall?.color,
+                      ),
                   ],
                 ],
               ),
@@ -1316,21 +1492,24 @@ class _Bubble extends StatelessWidget {
   }
 }
 
-/// 气泡内的引用摘要块。
-Widget _replyBox(BuildContext context, String preview) {
+/// 气泡内的引用摘要块（点击可跳转定位到被引用消息）。
+Widget _replyBox(BuildContext context, String preview, {VoidCallback? onTap}) {
   final scheme = Theme.of(context).colorScheme;
-  return Container(
-    margin: const EdgeInsets.only(bottom: 6),
-    padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
-    decoration: BoxDecoration(
-      border: Border(left: BorderSide(color: scheme.primary, width: 3)),
-      color: scheme.surfaceContainerHighest,
-      borderRadius: const BorderRadius.all(Radius.circular(4)),
+  return GestureDetector(
+    onTap: onTap,
+    child: Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+      decoration: BoxDecoration(
+        border: Border(left: BorderSide(color: scheme.primary, width: 3)),
+        color: scheme.surfaceContainerHighest,
+        borderRadius: const BorderRadius.all(Radius.circular(4)),
+      ),
+      child: Text(preview,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall),
     ),
-    child: Text(preview,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodySmall),
   );
 }
 

@@ -93,6 +93,7 @@ class ChatMessage {
     required this.content,
     required this.createdAt,
     this.recalled = false,
+    this.sendFailed = false,
   });
 
   final String serverMsgId;
@@ -103,6 +104,21 @@ class ChatMessage {
   final MessageContent content;
   final DateTime createdAt;
   final bool recalled;
+  /// 本地发送状态：长时间未收到 ack 时置为失败（仅客户端，不参与序列化）。
+  final bool sendFailed;
+
+  ChatMessage copyWith({String? serverMsgId, int? seq, bool? sendFailed}) =>
+      ChatMessage(
+        serverMsgId: serverMsgId ?? this.serverMsgId,
+        clientMsgId: clientMsgId,
+        conversationId: conversationId,
+        senderId: senderId,
+        seq: seq ?? this.seq,
+        content: content,
+        createdAt: createdAt,
+        recalled: recalled,
+        sendFailed: sendFailed ?? this.sendFailed,
+      );
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
         serverMsgId: json['server_msg_id'] as String? ?? '',
