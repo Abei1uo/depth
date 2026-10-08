@@ -7,6 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 import '../../../core/api/api_exception.dart';
 import '../../../core/presence/presence_controller.dart';
@@ -583,6 +586,11 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
               title: const Text('发送文件'),
               onTap: () => Navigator.of(ctx).pop('file'),
             ),
+            ListTile(
+              leading: const Icon(Icons.mic),
+              title: const Text('发送语音'),
+              onTap: () => Navigator.of(ctx).pop('voice'),
+            ),
           ],
         ),
       ),
@@ -593,6 +601,8 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
         final x = await ImagePicker().pickImage(source: ImageSource.gallery);
         if (x == null) return;
         await _uploadAndSend(File(x.path), type: MessageType.image);
+      } else if (choice == 'voice') {
+        await _recordVoice();
       } else {
         final files = await FilePicker.pickFiles();
         if (files.isEmpty) return;
@@ -610,7 +620,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   }
 
   Future<void> _uploadAndSend(File file,
-      {required int type, String? name}) async {
+      {required int type, String? name, int duration = 0}) async {
     final repo = ref.read(chatRepositoryProvider);
     final upload = await repo.uploadMedia(file, name: name);
     if (!mounted) return;
@@ -618,7 +628,30 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       type: type,
       mediaUrl: upload.url,
       size: upload.size,
+      duration: duration,
     ));
+  }
+
+  /// 录音→上传→发送语音消息。录音依赖真机麦克风。
+  Future<void> _recordVoice() async {
+    final rec = await showModalBottomSheet<_VoiceRecording>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const _RecordingSheet(),
+    );
+    if (rec == null || rec.path.isEmpty) return;
+    try {
+      final dur = rec.duration <= 0 ? 1 : rec.duration;
+      await _uploadAndSend(File(rec.path),
+          type: MessageType.voice,
+          name: 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a',
+          duration: dur);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('语音发送失败：$e')));
+      }
+    }
   }
 
   String _memberName(String id) {
@@ -1279,6 +1312,166 @@ class _EmptyMessages extends StatelessWidget {
       );
 }
 
+/// 语音气泡：播放/暂停 + 时长。播放器首次点击时懒建（避免测试触平台通道）。
+class _VoiceBubble extends StatefulWidget {
+  const _VoiceBubble({required this.url, required this.duration});
+
+  final String url;
+  final int duration;
+
+  @override
+  State<_VoiceBubble> createState() => _VoiceBubbleState();
+}
+
+class _VoiceBubbleState extends State<_VoiceBubble> {
+  AudioPlayer? _player;
+  bool _playing = false;
+
+  String get _label {
+    final m = widget.duration ~/ 60;
+    final s = widget.duration % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _toggle() async {
+    try {
+      if (_playing) {
+        await _player?.stop();
+        if (mounted) setState(() => _playing = false);
+        return;
+      }
+      final p = _player ??= AudioPlayer();
+      await p.setUrl(widget.url);
+      unawaited(p.play());
+      if (mounted) setState(() => _playing = true);
+      p.playerStateStream.listen((st) {
+        if (st.processingState == ProcessingState.completed && mounted) {
+          setState(() => _playing = false);
+        }
+      });
+    } catch (_) {
+      if (mounted) setState(() => _playing = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _player?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          onPressed: _toggle,
+          icon: Icon(_playing
+              ? Icons.pause_circle_filled
+              : Icons.play_circle_outline),
+        ),
+        const SizedBox(width: 48),
+        Text(_label, style: Theme.of(context).textTheme.bodySmall),
+      ],
+    );
+  }
+}
+
+/// 一次录音的结果：临时文件路径 + 时长（秒）。
+class _VoiceRecording {
+  const _VoiceRecording(this.path, this.duration);
+  final String path;
+  final int duration;
+}
+
+/// 录音面板：开始即录，点击完成返回路径与时长。依赖真机麦克风。
+class _RecordingSheet extends StatefulWidget {
+  const _RecordingSheet();
+
+  @override
+  State<_RecordingSheet> createState() => _RecordingSheetState();
+}
+
+class _RecordingSheetState extends State<_RecordingSheet> {
+  final _rec = AudioRecorder();
+  int _secs = 0;
+  Timer? _timer;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  Future<void> _start() async {
+    try {
+      if (!await _rec.hasPermission()) {
+        throw Exception('没有录音权限');
+      }
+      final dir = await getTemporaryDirectory();
+      final path =
+          '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _rec.start(const RecordConfig(encoder: AudioEncoder.aacLc),
+          path: path);
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _secs++);
+      });
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
+  }
+
+  Future<void> _stop() async {
+    _timer?.cancel();
+    final path = await _rec.stop();
+    if (mounted) {
+      Navigator.of(context).pop(_VoiceRecording(path ?? '', _secs));
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _rec.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final m = _secs ~/ 60;
+    final s = _secs % 60;
+    final time = '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 24),
+            Icon(_failed ? Icons.mic_off : Icons.mic,
+                size: 40, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(height: 12),
+            Text(_failed ? '录音不可用（需真机麦克风）' : '正在录音 $time',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 24),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: FilledButton.icon(
+                onPressed: _failed ? () => Navigator.of(context).pop() : _stop,
+                icon: const Icon(Icons.stop),
+                label: Text(_failed ? '关闭' : '完成录音（$time）'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 根据消息类型渲染气泡主体（文本/图片/文件/语音）。
 Widget _messageBody(BuildContext context, MessageContent c, TextAlign align) {
   switch (c.type) {
@@ -1322,7 +1515,8 @@ Widget _messageBody(BuildContext context, MessageContent c, TextAlign align) {
         ],
       );
     case MessageType.voice:
-      return const Text('[语音]（未实现）');
+      if (c.mediaUrl.isEmpty) return const Text('[语音上传中…]');
+      return _VoiceBubble(url: c.mediaUrl, duration: c.duration);
     default:
       return Text(c.text.isEmpty ? '[消息]' : c.text, textAlign: align);
   }

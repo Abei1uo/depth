@@ -40,6 +40,7 @@ class MessageContent {
     this.mediaUrl = '',
     this.thumbUrl = '',
     this.size = 0,
+    this.duration = 0,
     this.replyTo,
     this.mentions = const <String>[],
   });
@@ -49,6 +50,7 @@ class MessageContent {
   final String mediaUrl;
   final String thumbUrl;
   final int size;
+  final int duration; // 语音时长（秒）
   final ReplyInfo? replyTo;
   final List<String> mentions;
 
@@ -58,6 +60,7 @@ class MessageContent {
         mediaUrl: json['media_url'] as String? ?? '',
         thumbUrl: json['thumb_url'] as String? ?? '',
         size: (json['size'] as num? ?? 0).toInt(),
+        duration: (json['duration'] as num? ?? 0).toInt(),
         replyTo: json['reply_to'] is Map<String, dynamic>
             ? ReplyInfo.fromJson(json['reply_to'] as Map<String, dynamic>)
             : null,
@@ -70,6 +73,7 @@ class MessageContent {
         if (mediaUrl.isNotEmpty) 'media_url': mediaUrl,
         if (thumbUrl.isNotEmpty) 'thumb_url': thumbUrl,
         if (size != 0) 'size': size,
+        if (duration != 0) 'duration': duration,
         if (replyTo != null) 'reply_to': replyTo!.toJson(),
         if (mentions.isNotEmpty) 'mentions': mentions,
       };

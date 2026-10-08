@@ -22,6 +22,8 @@ type Content struct {
 	MediaURL  string `json:"media_url,omitempty"`
 	ThumbURL  string `json:"thumb_url,omitempty"`
 	SizeBytes int64  `json:"size,omitempty"`
+	// Duration 为语音消息时长（秒），仅 voice 类型使用。
+	Duration int64 `json:"duration,omitempty"`
 	// ReplyTo 非空表示本条为引用回复；随 content JSONB 存储。
 	ReplyTo *ReplyInfo `json:"reply_to,omitempty"`
 	// Mentions 为被 @ 的成员用户 ID 列表。

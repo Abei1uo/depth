@@ -234,4 +234,29 @@ void main() {
     expect(find.text('caught-up'), findsOneWidget);
     expect(find.text('seed'), findsOneWidget);
   });
+
+  testWidgets('语音消息渲染播放按钮与时长', (tester) async {
+    final ws = FakeWsClient();
+    final repo = FakeChatRepository();
+    repo.historyResult = [
+      ChatMessage(
+        serverMsgId: 'v-1',
+        clientMsgId: '',
+        conversationId: _convId,
+        senderId: _peerId,
+        seq: 3,
+        content: const MessageContent(
+          type: MessageType.voice,
+          mediaUrl: 'http://localhost:8080/api/v1/media/v-1',
+          duration: 7,
+        ),
+        createdAt: DateTime(2024),
+      ),
+    ];
+    await tester.pumpWidget(_wrap(ws, repo));
+    await _settle(tester);
+
+    expect(find.byIcon(Icons.play_circle_outline), findsOneWidget);
+    expect(find.text('00:07'), findsOneWidget);
+  });
 }

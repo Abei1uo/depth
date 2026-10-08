@@ -149,6 +149,11 @@ bash scripts/start_silo.sh            # 按 uname -m 自动选 arm64/amd64，装
 
 > **生产切换**：把 `S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/S3_BUCKET/S3_USE_SSL` 指向任意 S3 兼容服务
 > （AWS S3 / 阿里 OSS S3 兼容模式 / Ceph / Cloudflare R2）即可，仍是这套配置、无代码改动；接非 S3 协议服务时在 `internal/media` 新增一个 `Store` 实现。
+>
+> **富媒体/语音**：图片、文件、语音消息都经上面的媒体管道（上传→对象存储→代理下载）。语音录制在 Android
+> 需 `RECORD_AUDIO` 权限（已在 `app/android/app/src/main/AndroidManifest.xml` 声明，运行时由 `record` 插件弹窗请求），
+> 播放用 `just_audio`；依赖 `record`/`just_audio`/`path_provider` 三个 pub 包（`flutter pub get` 自动拉取）。这些均需 Silo 在跑，
+> 否则上传返回 5xx（媒体/语音集成测试会自动 SKIP）。
 
 
 ---

@@ -1162,3 +1162,93 @@ func TestMessageSearch(t *testing.T) {
 		t.Fatal("未搜到目标 needle")
 	}
 }
+
+// uploadMedia 上传一段字节到对象存储，返回服务端代理下载 url。
+func uploadMedia(t *testing.T, token string, data []byte, filename string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	req, _ := http.NewRequest(http.MethodPost, baseURL()+"/api/v1/media", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 500 {
+		t.Skipf("对象存储不可用(%d)，跳过语音测试", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("上传 got %d: %s", resp.StatusCode, body)
+	}
+	var up struct {
+		URL string `json:"url"`
+	}
+	_ = json.Unmarshal(body, &up)
+	return up.URL
+}
+
+// TestVoiceMessageFlow 验证：上传音频→发 voice 消息(含时长)→成员实时收到→代理下载字节一致。
+func TestVoiceMessageFlow(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tokenA, _ := register(t, "vcA")
+	tokenB, idB := register(t, "vcB")
+	conv := createDirect(t, tokenA, idB)
+
+	audio := []byte("FAKE-AUDIO-BYTES-" + randStr())
+	url := uploadMedia(t, tokenA, audio, "voice.m4a")
+	if url == "" {
+		t.Fatal("媒体上传未返回 url")
+	}
+
+	wsA, wsB := wsDial(t, ctx, tokenA), wsDial(t, ctx, tokenB)
+	defer wsA.CloseNow()
+	defer wsB.CloseNow()
+	time.Sleep(300 * time.Millisecond)
+
+	sid := sendContentVia(t, wsA, conv, map[string]any{
+		"type": 3, "media_url": url, "size": len(audio), "duration": 7,
+	})
+	got := awaitPayload(t, wsB, func(p map[string]any) bool {
+		return p["server_msg_id"] == sid
+	}, 8*time.Second)
+	if got == nil {
+		t.Fatal("B 未收到语音消息")
+	}
+	c, _ := got["content"].(map[string]any)
+	if asInt64(c["type"]) != 3 {
+		t.Fatalf("type 期望 3，got %v", c["type"])
+	}
+	if c["media_url"] != url {
+		t.Fatalf("media_url 不符: %v", c["media_url"])
+	}
+	if asInt64(c["duration"]) != 7 {
+		t.Fatalf("duration 期望 7，got %v", c["duration"])
+	}
+
+	// 代理下载校验字节一致
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	dl, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(dl, audio) {
+		t.Fatalf("语音下载校验失败 status=%d len=%d", resp.StatusCode, len(dl))
+	}
+}

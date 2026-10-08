@@ -31,6 +31,7 @@ message MessageContent {
   int64 size = 5;     // 字节数（媒体消息）
   ReplyInfo reply_to = 6; // 引用回复时非空
   repeated string mentions = 7; // 被 @ 的成员用户 ID
+  int64 duration = 8;         // 语音消息时长（秒）
 }
 
 // ReplyInfo 被引用消息的展示快照。
