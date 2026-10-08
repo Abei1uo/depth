@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../../../core/api/api_exception.dart';
+import '../../../core/utils/image_util.dart';
 import '../../../core/presence/presence_controller.dart';
 import '../../../core/ws/ws_client.dart';
 import '../../../core/ws/ws_envelope.dart';
@@ -690,7 +691,8 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       if (choice == 'image') {
         final x = await ImagePicker().pickImage(source: ImageSource.gallery);
         if (x == null) return;
-        await _uploadAndSend(File(x.path), type: MessageType.image);
+        await _uploadAndSend(File(x.path),
+            type: MessageType.image, compress: true);
       } else if (choice == 'voice') {
         await _recordVoice();
       } else {
@@ -710,9 +712,21 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   }
 
   Future<void> _uploadAndSend(File file,
-      {required int type, String? name, int duration = 0}) async {
+      {required int type,
+      String? name,
+      int duration = 0,
+      bool compress = false}) async {
     final repo = ref.read(chatRepositoryProvider);
-    final upload = await repo.uploadMedia(file, name: name);
+    File toUpload = file;
+    String? fileName = name;
+    if (compress) {
+      final c = await _compressedImageFile(file);
+      if (c != null) {
+        toUpload = c;
+        fileName ??= 'image_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      }
+    }
+    final upload = await repo.uploadMedia(toUpload, name: fileName);
     if (!mounted) return;
     _sendContent(MessageContent(
       type: type,
@@ -720,6 +734,22 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       size: upload.size,
       duration: duration,
     ));
+  }
+
+  /// 读取并压缩图片，成功且更小则写入临时文件返回；否则返回 null（用原图）。
+  Future<File?> _compressedImageFile(File src) async {
+    try {
+      final bytes = await src.readAsBytes();
+      final out = compressImageBytes(bytes);
+      if (out == null || out.length >= bytes.length) return null;
+      final dir = await getTemporaryDirectory();
+      final f = File(
+          '${dir.path}${Platform.pathSeparator}send_${DateTime.now().microsecondsSinceEpoch}.jpg');
+      await f.writeAsBytes(out);
+      return f;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 录音→上传→发送语音消息。录音依赖真机麦克风。
@@ -1722,21 +1752,27 @@ Widget _messageBody(BuildContext context, MessageContent c, TextAlign align) {
       if (c.mediaUrl.isEmpty) {
         return Text('[图片上传中…]', textAlign: align);
       }
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: Image.network(
-          c.mediaUrl,
-          width: 200,
-          fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => const Text('图片加载失败'),
-          loadingBuilder: (_, child, progress) => progress == null
-              ? child
-              : const SizedBox(
-                  width: 200,
-                  height: 120,
-                  child: Center(
-                      child: CircularProgressIndicator(strokeWidth: 2)),
-                ),
+      return GestureDetector(
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => _ImageViewer(url: c.mediaUrl)),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.network(
+            c.mediaUrl,
+            width: 200,
+            height: 150,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => const Text('图片加载失败'),
+            loadingBuilder: (_, child, progress) => progress == null
+                ? child
+                : const SizedBox(
+                    width: 200,
+                    height: 150,
+                    child: Center(
+                        child: CircularProgressIndicator(strokeWidth: 2)),
+                  ),
+          ),
         ),
       );
     case MessageType.file:
@@ -1762,6 +1798,39 @@ Widget _messageBody(BuildContext context, MessageContent c, TextAlign align) {
       return _VoiceBubble(url: c.mediaUrl, duration: c.duration);
     default:
       return Text(c.text.isEmpty ? '[消息]' : c.text, textAlign: align);
+  }
+}
+
+/// 全屏图片查看器：可缩放拖拽，左上角关闭。
+class _ImageViewer extends StatelessWidget {
+  const _ImageViewer({required this.url});
+
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          maxScale: 5,
+          child: Image.network(
+            url,
+            fit: BoxFit.contain,
+            errorBuilder: (_, _, _) =>
+                const Text('图片加载失败', style: TextStyle(color: Colors.white)),
+          ),
+        ),
+      ),
+    );
   }
 }
 
