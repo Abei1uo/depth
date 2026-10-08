@@ -138,20 +138,29 @@ func (s *Service) Members(ctx context.Context, convID string) ([]string, error) 
 	return s.chat.Members(ctx, convID)
 }
 
-// History 返回某会话的历史消息。
-func (s *Service) History(ctx context.Context, convID string, beforeSeq int64, limit int) ([]*Message, error) {
+// History 返回某会话的历史消息（排除 viewer 本地删除的）。
+func (s *Service) History(ctx context.Context, viewerID, convID string, beforeSeq int64, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
-	return s.repo.List(ctx, convID, beforeSeq, limit)
+	return s.repo.List(ctx, viewerID, convID, beforeSeq, limit)
 }
 
 // HistoryAfter 返回某会话 seq 大于 afterSeq 的消息（用于断线重连补拉）。
-func (s *Service) HistoryAfter(ctx context.Context, convID string, afterSeq int64, limit int) ([]*Message, error) {
+func (s *Service) HistoryAfter(ctx context.Context, viewerID, convID string, afterSeq int64, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	return s.repo.ListAfter(ctx, convID, afterSeq, limit)
+	return s.repo.ListAfter(ctx, viewerID, convID, afterSeq, limit)
+}
+
+// HideForMe 为 viewer 本地删除一条消息（仅影响其自身历史视图）。
+func (s *Service) HideForMe(ctx context.Context, viewerID, msgID string) error {
+	m, err := s.repo.GetByID(ctx, msgID)
+	if err != nil {
+		return err
+	}
+	return s.repo.Hide(ctx, m.ConversationID, viewerID, msgID)
 }
 
 // Search 在某会话内按文本关键字检索消息。

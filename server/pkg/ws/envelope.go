@@ -20,6 +20,7 @@ const (
 	EventSync        = "sync"           // 断线重连后按 last_seq 补拉
 	EventRecall      = "recall_message" // 撤回一条自己发的消息
 	EventEdit        = "edit_message"   // 编辑一条文本消息
+	EventDelete      = "delete_message" // 本地删除（仅对己隐藏）
 )
 
 // 服务端 → 客户端 事件类型。

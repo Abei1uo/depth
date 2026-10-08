@@ -90,7 +90,8 @@ func (h *Handler) Messages(c *gin.Context) {
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
 		limit = v
 	}
-	msgs, err := h.msgSvc.History(c.Request.Context(), convID, beforeSeq, limit)
+	uid := middleware.CtxUserID(c)
+	msgs, err := h.msgSvc.History(c.Request.Context(), uid, convID, beforeSeq, limit)
 	if err != nil {
 		slog.Error("list history failed", "conv", convID, "err", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取历史消息失败"})

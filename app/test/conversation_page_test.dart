@@ -259,4 +259,26 @@ void main() {
     expect(find.byIcon(Icons.play_circle_outline), findsOneWidget);
     expect(find.text('00:07'), findsOneWidget);
   });
+
+  testWidgets('长按菜单含转发/删除(仅我)，删除后本地移除并下发', (tester) async {
+    final ws = FakeWsClient();
+    final repo = FakeChatRepository();
+    repo.historyResult = [_msg('m1', 'hello', 1)];
+    await tester.pumpWidget(_wrap(ws, repo));
+    await _settle(tester);
+
+    await tester.longPress(find.text('hello'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('转发'), findsOneWidget);
+    expect(find.text('删除(仅我)'), findsOneWidget);
+
+    await tester.tap(find.text('删除(仅我)'));
+    await tester.pumpAndSettle();
+
+    final env = ws.firstOfType(WsEvents.deleteMessage);
+    expect(env, isNotNull);
+    expect(env!.payload['server_msg_id'], 'm1');
+    expect(find.text('hello'), findsNothing);
+  });
 }

@@ -1342,3 +1342,41 @@ func TestConversationPreview(t *testing.T) {
 		t.Fatal("列表未含该会话")
 	}
 }
+
+// TestLocalDeleteForViewer 验证：本地删除仅影响自己的历史视图，他人不受影响。
+func TestLocalDeleteForViewer(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tokenA, _ := register(t, "delA")
+	tokenB, idB := register(t, "delB")
+	conv := createDirect(t, tokenA, idB)
+
+	wsA := wsDial(t, ctx, tokenA)
+	defer wsA.CloseNow()
+	time.Sleep(300 * time.Millisecond)
+
+	sid1 := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "d1-" + randStr()})
+	sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "d2-" + randStr()})
+	sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "d3-" + randStr()})
+
+	if before := fetchMessages(t, tokenA, conv, 0, 50); len(before) != 3 {
+		t.Fatalf("删除前 A 应见 3 条, got %d", len(before))
+	}
+
+	// A 本地删除第 1 条
+	sendEnvelope(t, wsA, "delete_message", map[string]any{
+		"conversation_id": conv, "server_msg_id": sid1,
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	if afterA := fetchMessages(t, tokenA, conv, 0, 50); len(afterA) != 2 {
+		t.Fatalf("删除后 A 应见 2 条, got %d", len(afterA))
+	}
+	if afterB := fetchMessages(t, tokenB, conv, 0, 50); len(afterB) != 3 {
+		t.Fatalf("删除不应影响 B, B 应见 3 条, got %d", len(afterB))
+	}
+}

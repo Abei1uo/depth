@@ -36,8 +36,8 @@ func (r *Repository) Insert(ctx context.Context, m *Message) error {
 	return err
 }
 
-// List 拉取某会话 seq 小于 beforeSeq 的最近 limit 条（倒序取、正序回）。
-func (r *Repository) List(ctx context.Context, convID string, beforeSeq int64, limit int) ([]*Message, error) {
+// List 拉取某会话 seq 小于 beforeSeq 的最近 limit 条（倒序取、正序回），排除 viewer 已本地删除的消息。
+func (r *Repository) List(ctx context.Context, viewerID, convID string, beforeSeq int64, limit int) ([]*Message, error) {
 	if beforeSeq <= 0 {
 		beforeSeq = int64(1) << 62
 	}
@@ -45,8 +45,9 @@ func (r *Repository) List(ctx context.Context, convID string, beforeSeq int64, l
 		SELECT id, conversation_id, sender_id, seq, type, content, media_url, recalled, created_at
 		FROM messages
 		WHERE conversation_id = $1 AND seq < $2
+		  AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id = messages.id AND h.user_id = $4)
 		ORDER BY seq DESC
-		LIMIT $3`, convID, beforeSeq, limit)
+		LIMIT $3`, convID, beforeSeq, limit, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +88,8 @@ func (r *Repository) List(ctx context.Context, convID string, beforeSeq int64, l
 	return out, nil
 }
 
-// ListAfter 拉取某会话 seq 大于 afterSeq 的消息（升序，用于断线重连补拉）。
-func (r *Repository) ListAfter(ctx context.Context, convID string, afterSeq int64, limit int) ([]*Message, error) {
+// ListAfter 拉取某会话 seq 大于 afterSeq 的消息（升序，用于断线重连补拉），排除 viewer 已本地删除的。
+func (r *Repository) ListAfter(ctx context.Context, viewerID, convID string, afterSeq int64, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
@@ -96,8 +97,9 @@ func (r *Repository) ListAfter(ctx context.Context, convID string, afterSeq int6
 		SELECT id, conversation_id, sender_id, seq, type, content, media_url, recalled, created_at
 		FROM messages
 		WHERE conversation_id = $1 AND seq > $2
+		  AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id = messages.id AND h.user_id = $4)
 		ORDER BY seq ASC
-		LIMIT $3`, convID, afterSeq, limit)
+		LIMIT $3`, convID, afterSeq, limit, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +167,15 @@ func scanMessage(
 func (r *Repository) GetByID(ctx context.Context, id string) (*Message, error) {
 	row := r.pool.QueryRow(ctx, `SELECT `+msgColumns+` FROM messages WHERE id = $1`, id)
 	return scanMessage(row.Scan)
+}
+
+// Hide 为 viewer 本地删除一条消息（幂等；仅影响自己视图）。
+func (r *Repository) Hide(ctx context.Context, convID, viewerID, msgID string) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO message_hidden (conversation_id, user_id, message_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, message_id) DO NOTHING`, convID, viewerID, msgID)
+	return err
 }
 
 // Recall 将消息标为已撤回，并清空文本与媒体 URL（保留其他元数据供审计）。

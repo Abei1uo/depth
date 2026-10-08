@@ -765,6 +765,109 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     ));
   }
 
+  /// 本地删除（仅对己隐藏）：下发 delete_message，并从当前视图移除。
+  void _deleteForMe(ChatMessage m) {
+    if (m.serverMsgId.isEmpty) return;
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.deleteMessage,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'server_msg_id': m.serverMsgId,
+          },
+        ));
+    setState(() => _messages
+        .removeWhere((x) => x.serverMsgId == m.serverMsgId));
+  }
+
+  /// 转发：选择目标会话，把原消息内容重新发送过去（去掉引用/@）。
+  Future<void> _forwardMsg(ChatMessage m) async {
+    if (m.recalled) return;
+    final all = ref.read(conversationsProvider).value ?? const [];
+    final targets = all.where((c) => c.id != widget.conversationId).toList();
+    if (targets.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('没有其它会话')));
+      }
+      return;
+    }
+    final picked = await showModalBottomSheet<List<Conversation>>(
+      context: context,
+      builder: (ctx) {
+        final selected = <String>{};
+        return StatefulBuilder(
+          builder: (ctx, setSheet) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                  child: Row(
+                    children: [
+                      const Text('转发到'),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: selected.isEmpty
+                            ? null
+                            : () => Navigator.of(ctx).pop(targets
+                                .where((c) => selected.contains(c.id))
+                                .toList()),
+                        child: const Text('发送'),
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: targets.map((c) {
+                      return CheckboxListTile(
+                        value: selected.contains(c.id),
+                        onChanged: (v) => setSheet(() {
+                          if (v == true) {
+                            selected.add(c.id);
+                          } else {
+                            selected.remove(c.id);
+                          }
+                        }),
+                        title: Text(c.name.isEmpty
+                            ? '会话 ${c.id.substring(0, 6)}'
+                            : c.name),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (picked == null || picked.isEmpty) return;
+    final content = MessageContent(
+      type: m.content.type,
+      text: m.content.text,
+      mediaUrl: m.content.mediaUrl,
+      thumbUrl: m.content.thumbUrl,
+      size: m.content.size,
+      duration: m.content.duration,
+    );
+    for (final c in picked) {
+      ref.read(wsClientProvider).send(WsEnvelope(
+            type: WsEvents.sendMessage,
+            payload: <String, dynamic>{
+              'client_msg_id': _genClientMsgId(),
+              'conversation_id': c.id,
+              'content': content.toJson(),
+            },
+          ));
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已转发到 ${picked.length} 个会话')));
+    }
+  }
+
   Future<void> _addMention() async {
     final d = _detail;
     if (d == null) return;
@@ -834,6 +937,24 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                 onTap: () {
                   Navigator.of(ctx).pop();
                   _recallMsg(m);
+                },
+              ),
+            if (m.serverMsgId.isNotEmpty && !m.recalled)
+              ListTile(
+                leading: const Icon(Icons.share),
+                title: const Text('转发'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _forwardMsg(m);
+                },
+              ),
+            if (m.serverMsgId.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('删除(仅我)'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _deleteForMe(m);
                 },
               ),
           ],
