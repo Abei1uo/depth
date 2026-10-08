@@ -4,6 +4,8 @@ package user
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -71,6 +73,30 @@ func (r *Repository) ByID(ctx context.Context, id string) (*User, error) {
 // ByUsername 按用户名查询。
 func (r *Repository) ByUsername(ctx context.Context, username string) (*User, error) {
 	return r.queryOne(ctx, "username", username)
+}
+
+// UpdateProfile 按需更新本人资料：仅非 nil 字段会写入（支持只改昵称或只改头像）。
+func (r *Repository) UpdateProfile(ctx context.Context, id string, nickname, avatarURL *string) error {
+	if nickname == nil && avatarURL == nil {
+		return nil
+	}
+	sets := make([]string, 0, 2)
+	args := make([]any, 0, 3)
+	n := 1
+	if nickname != nil {
+		sets = append(sets, fmt.Sprintf("nickname = $%d", n))
+		args = append(args, *nickname)
+		n++
+	}
+	if avatarURL != nil {
+		sets = append(sets, fmt.Sprintf("avatar_url = $%d", n))
+		args = append(args, *avatarURL)
+		n++
+	}
+	args = append(args, id)
+	q := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(sets, ", "), n)
+	_, err := r.pool.Exec(ctx, q, args...)
+	return err
 }
 
 // Search 按用户名/昵称模糊搜索，最多返回 limit 条。

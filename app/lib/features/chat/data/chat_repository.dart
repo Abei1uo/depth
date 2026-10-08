@@ -62,6 +62,11 @@ class ChatRepository {
   Future<void> rename(String conversationId, String name) =>
       _postVoid('/conversations/$conversationId/rename', {'name': name});
 
+  /// 设置群公告（仅群主）。
+  Future<void> setAnnouncement(String conversationId, String text) =>
+      _postVoid('/conversations/$conversationId/announcement',
+          {'announcement': text});
+
   /// 加成员（仅群主）。
   Future<void> addMembers(String conversationId, List<String> userIds) =>
       _postVoid('/conversations/$conversationId/members/add', {'user_ids': userIds});

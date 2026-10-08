@@ -1380,3 +1380,100 @@ func TestLocalDeleteForViewer(t *testing.T) {
 		t.Fatalf("删除不应影响 B, B 应见 3 条, got %d", len(afterB))
 	}
 }
+
+// TestUpdateProfile 验证：PUT /users/me 改昵称/头像；GET /users/me 与 /users/:id 一致；部分更新不清空另一字段。
+func TestUpdateProfile(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	token, id := register(t, "pf")
+
+	nick := "新昵称-" + randStr()
+	avatar := "http://localhost:8080/api/v1/media/" + randStr()
+	if code := doJSON(t, http.MethodPut, "/api/v1/users/me", token,
+		map[string]any{"nickname": nick, "avatar_url": avatar}, nil); code != http.StatusOK {
+		t.Fatalf("PUT /users/me got %d", code)
+	}
+
+	var me struct {
+		Nickname  string `json:"nickname"`
+		AvatarURL string `json:"avatar_url"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/users/me", token, nil, &me); code != http.StatusOK {
+		t.Fatalf("GET /users/me got %d", code)
+	}
+	if me.Nickname != nick || me.AvatarURL != avatar {
+		t.Fatalf("资料不符: %+v", me)
+	}
+
+	var other struct {
+		Nickname string `json:"nickname"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/users/"+id, token, nil, &other); code != http.StatusOK {
+		t.Fatalf("GET /users/:id got %d", code)
+	}
+	if other.Nickname != nick {
+		t.Fatalf("按 ID 查看昵称不符: got %q want %q", other.Nickname, nick)
+	}
+
+	// 部分更新：只改昵称，头像保持不变。
+	nick2 := "仅昵称-" + randStr()
+	if code := doJSON(t, http.MethodPut, "/api/v1/users/me", token,
+		map[string]any{"nickname": nick2}, nil); code != http.StatusOK {
+		t.Fatalf("部分更新 PUT got %d", code)
+	}
+	me = struct {
+		Nickname  string `json:"nickname"`
+		AvatarURL string `json:"avatar_url"`
+	}{}
+	if code := doJSON(t, http.MethodGet, "/api/v1/users/me", token, nil, &me); code != http.StatusOK {
+		t.Fatalf("GET /users/me got %d", code)
+	}
+	if me.Nickname != nick2 {
+		t.Fatalf("昵称未更新: got %q want %q", me.Nickname, nick2)
+	}
+	if me.AvatarURL != avatar {
+		t.Fatalf("部分更新不应清空头像: got %q", me.AvatarURL)
+	}
+}
+
+// TestGroupAnnouncement 验证：群主设置公告→详情返回；非群主被拒(403)。
+func TestGroupAnnouncement(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	tokenA, _ := register(t, "anA")
+	tokenB, idB := register(t, "anB")
+
+	var grp struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/group", tokenA,
+		map[string]any{"name": "公告群", "member_ids": []string{idB}}, &grp); code != http.StatusOK {
+		t.Fatalf("create group got %d", code)
+	}
+
+	text := "本群公告-" + randStr()
+	path := "/api/v1/conversations/" + grp.ConversationID + "/announcement"
+	if code := doJSON(t, http.MethodPost, path, tokenA,
+		map[string]any{"announcement": text}, nil); code != http.StatusOK {
+		t.Fatalf("set announcement got %d", code)
+	}
+
+	var detail struct {
+		Conversation struct {
+			Announcement string `json:"announcement"`
+		} `json:"conversation"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+grp.ConversationID, tokenA, nil, &detail); code != http.StatusOK {
+		t.Fatalf("get detail got %d", code)
+	}
+	if detail.Conversation.Announcement != text {
+		t.Fatalf("公告不符: got %q want %q", detail.Conversation.Announcement, text)
+	}
+
+	if code := doJSON(t, http.MethodPost, path, tokenB,
+		map[string]any{"announcement": "篡改"}, nil); code != http.StatusForbidden {
+		t.Fatalf("非群主设置公告应 403, got %d", code)
+	}
+}

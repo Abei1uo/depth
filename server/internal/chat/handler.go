@@ -144,6 +144,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/conversations/:id/messages/search", h.Search)
 
 	rg.POST("/conversations/:id/rename", h.Rename)
+	rg.POST("/conversations/:id/announcement", h.SetAnnouncement)
 	rg.POST("/conversations/:id/members/add", h.AddMembers)
 	rg.POST("/conversations/:id/members/remove", h.RemoveMember)
 	rg.POST("/conversations/:id/leave", h.Leave)
@@ -164,6 +165,10 @@ func respondConvErr(c *gin.Context, err error, fallback string) {
 
 type renameReq struct {
 	Name string `json:"name" binding:"required,max=128"`
+}
+
+type announcementReq struct {
+	Announcement string `json:"announcement" binding:"max=512"`
 }
 
 type addMembersReq struct {
@@ -191,6 +196,20 @@ func (h *Handler) Rename(c *gin.Context) {
 	}
 	if err := h.repo.Rename(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.Name); err != nil {
 		respondConvErr(c, err, "改名失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// SetAnnouncement 处理 POST /conversations/:id/announcement。
+func (h *Handler) SetAnnouncement(c *gin.Context) {
+	var req announcementReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.repo.SetAnnouncement(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.Announcement); err != nil {
+		respondConvErr(c, err, "设置公告失败")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

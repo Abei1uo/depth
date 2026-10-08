@@ -21,18 +21,19 @@ var ErrForbidden = errors.New("需要群主权限")
 
 // Conversation 是会话实体。
 type Conversation struct {
-	ID        string     `json:"id"`
-	Type      int16      `json:"type"`
-	Name      string     `json:"name"`
-	AvatarURL string     `json:"avatar_url"`
-	OwnerID   string     `json:"owner_id"`
-	Unread    int        `json:"unread"`
-	Pinned    bool       `json:"pinned"`
-	Muted     bool       `json:"muted"`
-	Preview   string     `json:"preview"`
-	LastAt    *time.Time `json:"last_at,omitempty"`
-	MentionMe bool       `json:"mention_me"`
-	MemberIDs []string   `json:"member_ids,omitempty"`
+	ID           string     `json:"id"`
+	Type         int16      `json:"type"`
+	Name         string     `json:"name"`
+	AvatarURL    string     `json:"avatar_url"`
+	OwnerID      string     `json:"owner_id"`
+	Unread       int        `json:"unread"`
+	Pinned       bool       `json:"pinned"`
+	Muted        bool       `json:"muted"`
+	Preview      string     `json:"preview"`
+	LastAt       *time.Time `json:"last_at,omitempty"`
+	MentionMe    bool       `json:"mention_me"`
+	MemberIDs    []string   `json:"member_ids,omitempty"`
+	Announcement string     `json:"announcement,omitempty"`
 }
 
 // Repository 封装会话相关持久化。
@@ -223,8 +224,8 @@ type Member struct {
 func (r *Repository) Detail(ctx context.Context, convID string) (*Conversation, []Member, error) {
 	var c Conversation
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, type, COALESCE(name,''), COALESCE(avatar_url,''), COALESCE(owner_id::text,'')
-		FROM conversations WHERE id = $1`, convID).Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID)
+		SELECT id, type, COALESCE(name,''), COALESCE(avatar_url,''), COALESCE(owner_id::text,''), COALESCE(announcement,'')
+		FROM conversations WHERE id = $1`, convID).Scan(&c.ID, &c.Type, &c.Name, &c.AvatarURL, &c.OwnerID, &c.Announcement)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -283,6 +284,15 @@ func (r *Repository) Rename(ctx context.Context, convID, byUserID, name string) 
 		return err
 	}
 	_, err := r.pool.Exec(ctx, `UPDATE conversations SET name = $1 WHERE id = $2`, name, convID)
+	return err
+}
+
+// SetAnnouncement 设置群公告（仅群主）。
+func (r *Repository) SetAnnouncement(ctx context.Context, convID, byUserID, text string) error {
+	if err := r.assertGroupOwner(ctx, convID, byUserID); err != nil {
+		return err
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE conversations SET announcement = $1 WHERE id = $2`, text, convID)
 	return err
 }
 

@@ -249,6 +249,16 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                         _renameGroup(d.conversation.id, d.conversation.name);
                       },
                     ),
+                  if (isOwner && isGroup)
+                    IconButton(
+                      tooltip: '群公告',
+                      icon: const Icon(Icons.campaign_outlined),
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _setAnnouncement(
+                            d.conversation.id, d.conversation.announcement);
+                      },
+                    ),
                 ],
               ),
             ),
@@ -264,6 +274,10 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                       ),
                       title: Text(m.displayName),
                       subtitle: Text('@${m.username}'),
+                      onTap: () {
+                        Navigator.of(ctx).pop();
+                        _showMemberProfile(m);
+                      },
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -332,6 +346,75 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       await ref.read(conversationsProvider.notifier).rename(convId, name);
       _loadDetail();
     }
+  }
+
+  /// 设置群公告（仅群主）。
+  Future<void> _setAnnouncement(String convId, String current) async {
+    final controller = TextEditingController(text: current);
+    final text = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('群公告'),
+        content: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 2,
+            maxLines: 6,
+            decoration: const InputDecoration(hintText: '输入公告内容')),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (text == null) return;
+    try {
+      await ref.read(chatRepositoryProvider).setAnnouncement(convId, text);
+      _loadDetail();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('保存失败：$e')));
+      }
+    }
+  }
+
+  /// 查看成员资料（拉取完整用户信息，失败回退到成员摘要）。
+  Future<void> _showMemberProfile(ChatMember m) async {
+    AppUser? u;
+    try {
+      u = await ref.read(authRepositoryProvider).userById(m.userId);
+    } catch (_) {
+      u = null;
+    }
+    if (!mounted) return;
+    final name = u?.displayName ?? m.displayName;
+    final username = u?.username ?? m.username;
+    final avatar = u?.avatarUrl ?? m.avatarUrl;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(name),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            avatar.isNotEmpty
+                ? CircleAvatar(radius: 28, backgroundImage: NetworkImage(avatar))
+                : CircleAvatar(radius: 28, child: Text(name.characters.first)),
+            const SizedBox(height: 12),
+            Text('@$username'),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(), child: const Text('关闭')),
+        ],
+      ),
+    );
   }
 
   Future<void> _removeMember(String convId, ChatMember m) async {
@@ -1029,6 +1112,29 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
               : Column(
                   children: [
                     if (!_online) const _OfflineBanner(),
+                    if (_detail != null &&
+                        _detail!.conversation.isGroup &&
+                        _detail!.conversation.announcement.isNotEmpty)
+                      Material(
+                        color: Theme.of(context).colorScheme.secondaryContainer,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.campaign, size: 16),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  '公告：${_detail!.conversation.announcement}',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     Expanded(
                       child: _messages.isEmpty
                           ? const _EmptyMessages()

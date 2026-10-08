@@ -33,6 +33,7 @@ message Conversation {
   string avatar_url = 4;
   string owner_id = 5;
   repeated string member_ids = 6; // 可选，摘要接口不回填
+  string announcement = 7; // 群公告（仅群聊，群主可改）
 }
 
 message CreateDirectRequest {
@@ -62,10 +63,17 @@ message ListMessagesResponse {
   repeated Message messages = 1;
 }
 
+// SetAnnouncementRequest 设置群公告（仅群主）。
+message SetAnnouncementRequest {
+  string conversation_id = 1;
+  string announcement = 2; // <=512
+}
+
 // ChatService 会话与历史消息接口。
 service ChatService {
   rpc CreateDirect(CreateDirectRequest) returns (ConversationIdResponse);
   rpc CreateGroup(CreateGroupRequest) returns (ConversationIdResponse);
   rpc ListConversations(google.protobuf.Empty) returns (ListConversationsResponse);
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  rpc SetAnnouncement(SetAnnouncementRequest) returns (google.protobuf.Empty);
 }

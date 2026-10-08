@@ -13,6 +13,7 @@ class Conversation {
     this.preview = '',
     this.lastAt,
     this.mentionMe = false,
+    this.announcement = '',
   });
 
   /// 会话类型：0 单聊，1 群聊（与服务端常量一致）。
@@ -33,6 +34,8 @@ class Conversation {
   final DateTime? lastAt;
   /// 最后一条消息是否 @ 了本人。
   final bool mentionMe;
+  /// 群公告（仅群聊，群主可改）。
+  final String announcement;
 
   bool get isGroup => type == 1;
 
@@ -48,6 +51,7 @@ class Conversation {
         preview: json['preview'] as String? ?? '',
         lastAt: DateTime.tryParse(json['last_at'] as String? ?? ''),
         mentionMe: json['mention_me'] as bool? ?? false,
+        announcement: json['announcement'] as String? ?? '',
         memberIds: (json['member_ids'] as List<dynamic>? ?? const <dynamic>[])
             .map((e) => e as String)
             .toList(),

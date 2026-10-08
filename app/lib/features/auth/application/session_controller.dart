@@ -67,6 +67,21 @@ class SessionController extends Notifier<AuthState> {
       _run(() =>
           _repo.register(username: username, nickname: nickname, password: password));
 
+  /// 修改本人资料（昵称/头像），成功后刷新内存中的 user。
+  Future<bool> updateProfile({String? nickname, String? avatarUrl}) async {
+    try {
+      final u =
+          await _repo.updateProfile(nickname: nickname, avatarUrl: avatarUrl);
+      state = state.copyWith(user: u);
+      return true;
+    } on ApiException catch (e) {
+      state = state.copyWith(error: e.message);
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void logout() {
     _tokens.clear();
     _ws.close();

@@ -55,10 +55,23 @@ message SearchUsersResponse {
   repeated User users = 1;
 }
 
+// UpdateProfileRequest 修改本人资料（昵称/头像）。
+message UpdateProfileRequest {
+  string nickname = 1;   // <=64
+  string avatar_url = 2; // 头像代理 URL（可为空表示不改）
+}
+
+// UserIdRequest 按 ID 查看用户资料。
+message UserIdRequest {
+  string id = 1;
+}
+
 // UserService 用户与认证相关的读/写接口。
 // MVP 由 gin HTTP 实现；保留 service 定义以便后续迁移 gRPC。
 service UserService {
   rpc Me(google.protobuf.Empty) returns (User); // GET /users/me
+  rpc UpdateProfile(UpdateProfileRequest) returns (User); // PUT /users/me
+  rpc GetProfile(UserIdRequest) returns (User); // GET /users/:id
   rpc Search(SearchUsersRequest) returns (SearchUsersResponse); // GET /users/search
   rpc Register(RegisterRequest) returns (AuthSession); // POST /auth/register
   rpc Login(LoginRequest) returns (AuthSession); // POST /auth/login

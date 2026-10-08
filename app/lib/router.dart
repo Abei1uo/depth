@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import 'features/auth/application/session_controller.dart';
 import 'features/auth/presentation/login_page.dart';
+import 'features/auth/presentation/profile_page.dart';
 import 'features/auth/presentation/register_page.dart';
 import 'features/chat/presentation/conversation_page.dart';
 import 'features/chat/presentation/home_page.dart';
@@ -33,6 +34,9 @@ final routerProvider = Provider<GoRouter>((ref) {
           path: '/register',
           builder: (context, state) => const RegisterPage()),
       GoRoute(path: '/', builder: (context, state) => const HomePage()),
+      GoRoute(
+          path: '/profile',
+          builder: (context, state) => const ProfilePage()),
       GoRoute(
         path: '/chat/:id',
         builder: (context, state) => ConversationPage(

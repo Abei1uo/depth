@@ -43,6 +43,11 @@ class HomePage extends ConsumerWidget {
             onPressed: null,
           ),
           IconButton(
+            tooltip: '个人资料',
+            icon: const Icon(Icons.person_outline),
+            onPressed: () => context.push('/profile'),
+          ),
+          IconButton(
             tooltip: '退出登录',
             icon: const Icon(Icons.logout),
             onPressed: () => ref.read(sessionControllerProvider.notifier).logout(),

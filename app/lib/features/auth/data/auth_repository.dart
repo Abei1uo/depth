@@ -60,6 +60,29 @@ class AuthRepository {
     }
   }
 
+  /// GET /api/v1/users/:id —— 查看他人资料。
+  Future<AppUser> userById(String id) async {
+    try {
+      final resp = await _api.get<Map<String, dynamic>>('/users/$id');
+      return AppUser.fromJson(resp.data!);
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
+  /// PUT /api/v1/users/me —— 修改本人昵称/头像，返回更新后的用户。
+  Future<AppUser> updateProfile({String? nickname, String? avatarUrl}) async {
+    try {
+      final resp = await _api.put<Map<String, dynamic>>('/users/me', data: {
+        'nickname': ?nickname,
+        'avatar_url': ?avatarUrl,
+      });
+      return AppUser.fromJson(resp.data!);
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
   Future<AuthSession> _session(
       Future<Response<Map<String, dynamic>>> Function() action) async {
     try {
