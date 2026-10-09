@@ -181,6 +181,7 @@ var (
 	ErrWindowPassed = errors.New("已超过可操作时间")
 	ErrNotEditable  = errors.New("该消息不可编辑")
 	ErrEmptyText    = errors.New("内容不能为空")
+	ErrEmptyEmoji   = errors.New("表情不能为空")
 )
 
 // Recall 撤回一条自己发送且在窗口内的消息：清空正文并广播更新。
@@ -252,4 +253,87 @@ func (s *Service) broadcastUpdate(ctx context.Context, m *Message) {
 			s.hub.SendToUser(uid, data)
 		}
 	}
+}
+
+// React 切换当前用户对某条消息的某个表情回应，落库后广播 message_update。
+func (s *Service) React(ctx context.Context, userID, msgID, emoji string, on bool) (*Message, error) {
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" || len([]rune(emoji)) > 16 {
+		return nil, ErrEmptyEmoji
+	}
+	m, err := s.repo.GetByID(ctx, msgID)
+	if err != nil {
+		return nil, err
+	}
+	if m.Recalled {
+		return nil, ErrNotEditable
+	}
+	reactions := m.Content.Reactions
+	if reactions == nil {
+		reactions = map[string][]string{}
+	}
+	list := reactions[emoji]
+	if on {
+		if !containsStr(list, userID) {
+			list = append(list, userID)
+		}
+	} else {
+		list = removeStr(list, userID)
+	}
+	if len(list) == 0 {
+		delete(reactions, emoji)
+	} else {
+		reactions[emoji] = list
+	}
+	if err := s.repo.UpdateReactions(ctx, msgID, reactions); err != nil {
+		return nil, err
+	}
+	m.Content.Reactions = reactions
+	s.broadcastUpdate(ctx, m)
+	return m, nil
+}
+
+// AppendSystem 向会话追加一条系统消息（type=4）并广播给全体成员。
+func (s *Service) AppendSystem(ctx context.Context, convID, actorID, text string) error {
+	seq, err := s.NextSeq(ctx, convID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	m := &Message{
+		ID:             uuid.NewString(),
+		ConversationID: convID,
+		SenderID:       actorID,
+		Seq:            seq,
+		Content:        Content{Type: TypeSys, Text: text},
+		CreatedAt:      now,
+	}
+	if err := s.repo.Insert(ctx, m); err != nil {
+		return err
+	}
+	members, err := s.chat.Members(ctx, convID)
+	if err != nil {
+		return err
+	}
+	s.Deliver(ctx, m, members, "")
+	return nil
+}
+
+func containsStr(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func removeStr(xs []string, v string) []string {
+	out := xs[:0]
+	for _, x := range xs {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
 }

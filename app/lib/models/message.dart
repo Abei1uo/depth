@@ -43,6 +43,7 @@ class MessageContent {
     this.duration = 0,
     this.replyTo,
     this.mentions = const <String>[],
+    this.reactions = const <String, List<String>>{},
   });
 
   final int type;
@@ -53,6 +54,7 @@ class MessageContent {
   final int duration; // 语音时长（秒）
   final ReplyInfo? replyTo;
   final List<String> mentions;
+  final Map<String, List<String>> reactions; // emoji -> 已回应成员 ID 列表
 
   factory MessageContent.fromJson(Map<String, dynamic> json) => MessageContent(
         type: (json['type'] as num? ?? 0).toInt(),
@@ -65,6 +67,7 @@ class MessageContent {
             ? ReplyInfo.fromJson(json['reply_to'] as Map<String, dynamic>)
             : null,
         mentions: (json['mentions'] as List?)?.cast<String>() ?? const <String>[],
+        reactions: _parseReactions(json['reactions']),
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -76,10 +79,25 @@ class MessageContent {
         if (duration != 0) 'duration': duration,
         if (replyTo != null) 'reply_to': replyTo!.toJson(),
         if (mentions.isNotEmpty) 'mentions': mentions,
+        if (reactions.isNotEmpty) 'reactions': reactions,
       };
 
   factory MessageContent.text(String value) =>
       MessageContent(type: MessageType.text, text: value);
+}
+
+/// 解析 reactions JSON（emoji -> 用户 ID 列表）为强类型映射。
+Map<String, List<String>> _parseReactions(dynamic raw) {
+  if (raw is Map) {
+    final out = <String, List<String>>{};
+    for (final e in raw.entries) {
+      if (e.key is String && e.value is List) {
+        out[e.key as String] = (e.value as List).cast<String>();
+      }
+    }
+    return out;
+  }
+  return const <String, List<String>>{};
 }
 
 /// 完整消息实体，对应服务端 message.Message。

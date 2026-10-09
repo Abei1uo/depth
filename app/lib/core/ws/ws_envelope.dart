@@ -34,6 +34,7 @@ class WsEvents {
   static const String recallMessage = 'recall_message';
   static const String editMessage = 'edit_message';
   static const String deleteMessage = 'delete_message';
+  static const String reactMessage = 'react_message';
 
   // 下行：服务端 -> 客户端
   static const String newMessage = 'new_message';

@@ -28,6 +28,8 @@ type Content struct {
 	ReplyTo *ReplyInfo `json:"reply_to,omitempty"`
 	// Mentions 为被 @ 的成员用户 ID 列表。
 	Mentions []string `json:"mentions,omitempty"`
+	// Reactions 为表情回应：emoji ->  reacted 用户 ID 列表（随 content JSONB 存储）。
+	Reactions map[string][]string `json:"reactions,omitempty"`
 }
 
 // ReplyInfo 是被引用消息的快照（仅用于展示摘要，不保证源消息仍存在）。

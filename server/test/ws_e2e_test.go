@@ -1477,3 +1477,104 @@ func TestGroupAnnouncement(t *testing.T) {
 		t.Fatalf("非群主设置公告应 403, got %d", code)
 	}
 }
+
+// TestMessageReaction 验证：表情回应切换→广播 message_update 含 reactions，且落库持久。
+func TestMessageReaction(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tokenA, _ := register(t, "rtA")
+	tokenB, idB := register(t, "rtB")
+	conv := createDirect(t, tokenA, idB)
+	wsA, wsB := wsDial(t, ctx, tokenA), wsDial(t, ctx, tokenB)
+	defer wsA.CloseNow()
+	defer wsB.CloseNow()
+	time.Sleep(400 * time.Millisecond)
+
+	sid := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "react-target-" + randStr()})
+	sendEnvelope(t, wsA, "react_message", map[string]any{
+		"conversation_id": conv, "server_msg_id": sid, "emoji": "👍", "on": true,
+	})
+
+	upd := awaitPayload(t, wsB, func(p map[string]any) bool {
+		if p["server_msg_id"] != sid {
+			return false
+		}
+		c, _ := p["content"].(map[string]any)
+		r, _ := c["reactions"].(map[string]any)
+		_, ok := r["👍"]
+		return ok
+	}, 5*time.Second)
+	if upd == nil {
+		t.Fatal("未收到含 reactions 的 message_update")
+	}
+
+	var res struct {
+		Messages []struct {
+			ID      string `json:"server_msg_id"`
+			Content struct {
+				Reactions map[string][]string `json:"reactions"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+conv+"/messages?limit=50", tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("history got %d", code)
+	}
+	var persisted bool
+	for _, m := range res.Messages {
+		if m.ID == sid {
+			if users, has := m.Content.Reactions["👍"]; has && len(users) > 0 {
+				persisted = true
+			}
+		}
+	}
+	if !persisted {
+		t.Fatal("落库 reactions 缺失")
+	}
+}
+
+// TestSystemMessage 验证：群主添加成员后生成 type=4 系统消息。
+func TestSystemMessage(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	tokenA, _ := register(t, "sysA")
+	_, idB := register(t, "sysB")
+	_, idC := register(t, "sysC")
+
+	var grp struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/group", tokenA,
+		map[string]any{"name": "系统群", "member_ids": []string{idB}}, &grp); code != http.StatusOK {
+		t.Fatalf("create group got %d", code)
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+grp.ConversationID+"/members/add", tokenA,
+		map[string]any{"user_ids": []string{idC}}, nil); code != http.StatusOK {
+		t.Fatalf("add member got %d", code)
+	}
+
+	var res struct {
+		Messages []struct {
+			Content struct {
+				Type int16  `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+grp.ConversationID+"/messages?limit=50", tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("history got %d", code)
+	}
+	var found bool
+	for _, m := range res.Messages {
+		if m.Content.Type == 4 && strings.Contains(m.Content.Text, "加入了群聊") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("未发现成员加入的系统消息")
+	}
+}

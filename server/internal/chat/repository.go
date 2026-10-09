@@ -144,6 +144,18 @@ func (r *Repository) PeerMembers(ctx context.Context, userID string) ([]string, 
 	return out, rows.Err()
 }
 
+// DisplayName 返回用户的展示名（昵称优先，回退用户名），用于系统消息文案。
+func (r *Repository) DisplayName(ctx context.Context, userID string) (string, error) {
+	var name string
+	err := r.pool.QueryRow(ctx, `
+		SELECT CASE WHEN nickname <> '' THEN nickname ELSE username END
+		FROM users WHERE id = $1`, userID).Scan(&name)
+	if err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // Members 返回会话全部成员 ID。
 func (r *Repository) Members(ctx context.Context, convID string) ([]string, error) {
 	rows, err := r.pool.Query(ctx, `

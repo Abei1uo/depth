@@ -321,4 +321,44 @@ void main() {
     expect(computeUnreadAnchor(list, 2, 'me'), 's3');
     expect(computeUnreadAnchor(list, 3, 'me'), 's1');
   });
+
+  testWidgets('系统消息居中渲染', (tester) async {
+    final ws = FakeWsClient();
+    final repo = FakeChatRepository();
+    repo.historyResult = [
+      ChatMessage(
+        serverMsgId: 's1',
+        clientMsgId: '',
+        conversationId: _convId,
+        senderId: _peerId,
+        seq: 1,
+        content: const MessageContent(
+            type: MessageType.system, text: '「张三」加入了群聊'),
+        createdAt: DateTime(2024),
+      ),
+    ];
+    await tester.pumpWidget(_wrap(ws, repo));
+    await _settle(tester);
+    expect(find.text('「张三」加入了群聊'), findsOneWidget);
+  });
+
+  testWidgets('表情回应在气泡下方显示计数', (tester) async {
+    final ws = FakeWsClient();
+    final repo = FakeChatRepository();
+    repo.historyResult = [
+      ChatMessage(
+        serverMsgId: 's2',
+        clientMsgId: '',
+        conversationId: _convId,
+        senderId: _peerId,
+        seq: 2,
+        content: const MessageContent(type: MessageType.text, text: 'hi',
+            reactions: {'👍': ['u1', 'u2']}),
+        createdAt: DateTime(2024),
+      ),
+    ];
+    await tester.pumpWidget(_wrap(ws, repo));
+    await _settle(tester);
+    expect(find.text('👍 2'), findsOneWidget);
+  });
 }

@@ -115,6 +115,11 @@ func (s *WSServer) dispatch(ctx context.Context, client *ws.Client, env *ws.Enve
 		return s.handleEdit(ctx, client, env)
 	case ws.EventDelete:
 		return s.handleDelete(ctx, client, env)
+	case ws.EventReact:
+		if s.msgSvc == nil {
+			return nil, errors.New("消息服务尚未就绪")
+		}
+		return s.handleReact(ctx, client, env)
 	default:
 		return nil, errors.New("未知事件类型: " + env.Type)
 	}
@@ -307,6 +312,26 @@ func (s *WSServer) handleDelete(ctx context.Context, client *ws.Client, env *ws.
 		return nil, errors.New("delete_message 负载格式错误")
 	}
 	if err := s.msgSvc.HideForMe(ctx, client.UserID(), req.ServerMsgID); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// handleReact 处理上行 react_message：切换表情回应，服务会广播 message_update。
+func (s *WSServer) handleReact(ctx context.Context, client *ws.Client, env *ws.Envelope) ([]byte, error) {
+	if s.msgSvc == nil {
+		return nil, errors.New("消息服务尚未就绪")
+	}
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		ServerMsgID    string `json:"server_msg_id"`
+		Emoji          string `json:"emoji"`
+		On             bool   `json:"on"`
+	}
+	if err := json.Unmarshal(env.Payload, &req); err != nil || req.ServerMsgID == "" {
+		return nil, errors.New("react_message 负载格式错误")
+	}
+	if _, err := s.msgSvc.React(ctx, client.UserID(), req.ServerMsgID, req.Emoji, req.On); err != nil {
 		return nil, err
 	}
 	return nil, nil

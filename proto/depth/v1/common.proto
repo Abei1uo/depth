@@ -22,7 +22,7 @@ enum MessageType {
 }
 
 // MessageContent 消息正文负载。
-// 对应后端 message.Content（JSON: type/text/media_url/thumb_url/size/reply_to/mentions）。
+// 对应后端 message.Content（JSON: type/text/media_url/thumb_url/size/reply_to/mentions/duration/reactions）。
 message MessageContent {
   MessageType type = 1;
   string text = 2;
@@ -32,6 +32,12 @@ message MessageContent {
   ReplyInfo reply_to = 6; // 引用回复时非空
   repeated string mentions = 7; // 被 @ 的成员用户 ID
   int64 duration = 8;         // 语音消息时长（秒）
+  map<string, UserList> reactions = 9; // emoji -> 已回应的用户 ID 列表
+}
+
+// UserList 一组用户 ID（用于表示表情回应的响应者）。
+message UserList {
+  repeated string user_ids = 1;
 }
 
 // ReplyInfo 被引用消息的展示快照。

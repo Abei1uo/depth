@@ -195,6 +195,21 @@ func (r *Repository) UpdateText(ctx context.Context, id, text string) error {
 	return err
 }
 
+// UpdateReactions 用给定映射整体替换 content.reactions（空则写入 {}）。
+func (r *Repository) UpdateReactions(ctx context.Context, id string, reactions map[string][]string) error {
+	if reactions == nil {
+		reactions = map[string][]string{}
+	}
+	b, err := json.Marshal(reactions)
+	if err != nil {
+		return err
+	}
+	_, err = r.pool.Exec(ctx, `
+		UPDATE messages SET content = jsonb_set(content, '{reactions}', $2::jsonb)
+		WHERE id = $1`, id, string(b))
+	return err
+}
+
 // Search 在某会话内按文本关键字检索（ILIKE），返回未撤回的文本消息（时间正序）。
 func (r *Repository) Search(ctx context.Context, convID, q string, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 50 {

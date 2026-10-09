@@ -58,6 +58,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   ReplyInfo? _replyTo; // 正在引用回复的目标
   final List<String> _mentions = <String>[]; // 当前待发送的 @ 成员 ID
   static const Duration _sendTimeout = Duration(seconds: 15);
+  static const List<String> _reactionEmojis = <String>['👍', '❤️', '😂', '😮', '😢', '🎉'];
   final Map<String, Timer> _ackTimers = <String, Timer>{}; // clientMsgId -> 超时计时
   int _unreadAtOpen = 0; // 打开时快照的未读数（用于未读分隔线）
   String? _unreadAnchorId; // 最早一条未读消息的 serverMsgId
@@ -660,12 +661,23 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     final clientMsgId = _genClientMsgId();
     _draftSaveTimer?.cancel();
     _draft?.clear(widget.conversationId);
+    // 发送新消息时不携带 reactions（重发不应复制旧回应）。
+    final sendContent = MessageContent(
+      type: composed.type,
+      text: composed.text,
+      mediaUrl: composed.mediaUrl,
+      thumbUrl: composed.thumbUrl,
+      size: composed.size,
+      duration: composed.duration,
+      replyTo: composed.replyTo,
+      mentions: List<String>.from(composed.mentions),
+    );
     ref.read(wsClientProvider).send(WsEnvelope(
           type: WsEvents.sendMessage,
           payload: <String, dynamic>{
             'client_msg_id': clientMsgId,
             'conversation_id': widget.conversationId,
-            'content': composed.toJson(),
+            'content': sendContent.toJson(),
           },
         ));
 
@@ -676,7 +688,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       conversationId: widget.conversationId,
       senderId: _meId,
       seq: 0,
-      content: composed,
+      content: sendContent,
       createdAt: DateTime.now(),
     );
     setState(() => _messages.add(optimistic));
@@ -920,6 +932,46 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     if (idx >= 0) setState(() => _messages[idx] = updated);
   }
 
+  /// 弹出表情选取，选中后切换对该消息的回应（未选则取消）。
+  Future<void> _pickReaction(ChatMessage m) async {
+    if (m.serverMsgId.isEmpty) return;
+    final mine = m.content.reactions;
+    final emoji = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: _reactionEmojis.map((e) {
+              final reactedByMe = (mine[e] ?? const <String>[]).contains(_meId);
+              return IconButton(
+                iconSize: 30,
+                isSelected: reactedByMe,
+                tooltip: reactedByMe ? '$e 点击取消' : e,
+                onPressed: () => Navigator.of(ctx).pop(e),
+                icon: Text(e),
+              );
+            }).toList(),
+          ),
+        ),
+      ),
+    );
+    if (emoji == null) return;
+    final already = (mine[emoji] ?? const <String>[]).contains(_meId);
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.reactMessage,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'server_msg_id': m.serverMsgId,
+            'emoji': emoji,
+            'on': !already,
+          },
+        ));
+  }
+
   void _recallMsg(ChatMessage m) {
     if (m.serverMsgId.isEmpty) return;
     ref.read(wsClientProvider).send(WsEnvelope(
@@ -1140,6 +1192,17 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                 _setReply(m);
               },
             ),
+            if (m.serverMsgId.isNotEmpty &&
+                !m.recalled &&
+                m.content.type != MessageType.system)
+              ListTile(
+                leading: const Icon(Icons.emoji_emotions_outlined),
+                title: const Text('回应'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _pickReaction(m);
+                },
+              ),
             if (canAct && m.content.type == MessageType.text)
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
@@ -1296,6 +1359,24 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                       : const SizedBox(height: 8);
                                 }
                                 final m = _messages[i - 1];
+                                if (m.content.type == MessageType.system) {
+                                  return Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 6, horizontal: 24),
+                                    child: Center(
+                                      child: Text(
+                                        m.content.text,
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: Theme.of(context)
+                                                .textTheme
+                                                .labelSmall
+                                                ?.color),
+                                      ),
+                                    ),
+                                  );
+                                }
                                 final reply = m.content.replyTo;
                                 final bubble = _Bubble(
                                   key: m.serverMsgId.isEmpty
@@ -1303,11 +1384,13 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                       : _keyFor(m.serverMsgId),
                                   message: m,
                                   isMe: m.senderId == _meId,
+                                  myId: _meId,
                                   replyPreview: reply == null
                                       ? null
                                       : '${_memberName(reply.senderId)}: ${reply.text}',
                                   mentionsMe:
                                       m.content.mentions.contains(_meId),
+                                  reactions: m.content.reactions,
                                   read: m.senderId == _meId &&
                                       m.seq > 0 &&
                                       m.seq <= _peerReadSeq,
@@ -1404,6 +1487,8 @@ class _Bubble extends StatelessWidget {
     required this.isMe,
     this.replyPreview,
     this.mentionsMe = false,
+    this.myId = '',
+    this.reactions = const <String, List<String>>{},
     this.read = false,
     this.failed = false,
     this.onLongPress,
@@ -1415,6 +1500,8 @@ class _Bubble extends StatelessWidget {
   final bool isMe;
   final String? replyPreview;
   final bool mentionsMe;
+  final String myId;
+  final Map<String, List<String>> reactions;
   final bool read;
   final bool failed;
   final VoidCallback? onLongPress;
@@ -1484,9 +1571,39 @@ class _Bubble extends StatelessWidget {
                   ],
                 ],
               ),
+              if (reactions.isNotEmpty) _reactionsRow(context),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// 气泡下方的表情回应行（自己参与过的高亮）。
+  Widget _reactionsRow(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        alignment: isMe ? WrapAlignment.end : WrapAlignment.start,
+        children: [
+          for (final e in reactions.entries)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: e.value.contains(myId)
+                      ? scheme.primary
+                      : scheme.outlineVariant,
+                ),
+              ),
+              child: Text('${e.key} ${e.value.length}',
+                  style: const TextStyle(fontSize: 12)),
+            ),
+        ],
       ),
     );
   }

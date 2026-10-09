@@ -2,6 +2,7 @@ package chat
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -222,9 +223,21 @@ func (h *Handler) AddMembers(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.repo.AddMembers(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.UserIDs); err != nil {
+	ctx := c.Request.Context()
+	convID := c.Param("id")
+	actor := middleware.CtxUserID(c)
+	if err := h.repo.AddMembers(ctx, convID, actor, req.UserIDs); err != nil {
 		respondConvErr(c, err, "添加成员失败")
 		return
+	}
+	if h.msgSvc != nil {
+		for _, uid := range req.UserIDs {
+			if name, err := h.repo.DisplayName(ctx, uid); err == nil {
+				if err := h.msgSvc.AppendSystem(ctx, convID, actor, fmt.Sprintf("「%s」加入了群聊", name)); err != nil {
+					slog.Warn("append join system message failed", "conv", convID, "err", err.Error())
+				}
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -236,18 +249,38 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.repo.RemoveMember(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.UserID); err != nil {
+	ctx := c.Request.Context()
+	convID := c.Param("id")
+	actor := middleware.CtxUserID(c)
+	if err := h.repo.RemoveMember(ctx, convID, actor, req.UserID); err != nil {
 		respondConvErr(c, err, "移除成员失败")
 		return
+	}
+	if h.msgSvc != nil {
+		if name, err := h.repo.DisplayName(ctx, req.UserID); err == nil {
+			if err := h.msgSvc.AppendSystem(ctx, convID, actor, fmt.Sprintf("「%s」被移出群聊", name)); err != nil {
+				slog.Warn("append remove system message failed", "conv", convID, "err", err.Error())
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // Leave 处理 POST /conversations/:id/leave。
 func (h *Handler) Leave(c *gin.Context) {
-	if err := h.repo.Leave(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c)); err != nil {
+	ctx := c.Request.Context()
+	convID := c.Param("id")
+	uid := middleware.CtxUserID(c)
+	if err := h.repo.Leave(ctx, convID, uid); err != nil {
 		respondConvErr(c, err, "退出会话失败")
 		return
+	}
+	if h.msgSvc != nil {
+		if name, err := h.repo.DisplayName(ctx, uid); err == nil {
+			if err := h.msgSvc.AppendSystem(ctx, convID, uid, fmt.Sprintf("「%s」退出了群聊", name)); err != nil {
+				slog.Warn("append leave system message failed", "conv", convID, "err", err.Error())
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
