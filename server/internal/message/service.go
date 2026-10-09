@@ -171,6 +171,14 @@ func (s *Service) Search(ctx context.Context, convID, q string, limit int) ([]*M
 	return s.repo.Search(ctx, convID, strings.TrimSpace(q), limit)
 }
 
+// SearchGlobal 跨 viewer 所在全部会话检索文本消息。
+func (s *Service) SearchGlobal(ctx context.Context, viewerID, q string, limit int) ([]*Message, error) {
+	if strings.TrimSpace(q) == "" {
+		return []*Message{}, nil
+	}
+	return s.repo.SearchGlobal(ctx, viewerID, strings.TrimSpace(q), limit)
+}
+
 // 撤回 / 编辑的时间窗口与校验错误。
 const (
 	actionWindow = 2 * time.Minute

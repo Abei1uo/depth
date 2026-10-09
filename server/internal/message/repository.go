@@ -210,6 +210,36 @@ func (r *Repository) UpdateReactions(ctx context.Context, id string, reactions m
 	return err
 }
 
+// SearchGlobal 跨 viewer 所在全部会话检索文本消息（排除本地已删/已撤回/非文本），时间倒序。
+func (r *Repository) SearchGlobal(ctx context.Context, viewerID, q string, limit int) ([]*Message, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT m.id, m.conversation_id, m.sender_id, m.seq, m.type, m.content, m.media_url, m.recalled, m.created_at
+		FROM messages m
+		JOIN conversation_members cm ON cm.conversation_id = m.conversation_id AND cm.user_id = $1
+		WHERE m.type = 0 AND m.recalled = false
+		  AND m.content ->> 'text' ILIKE '%' || $2 || '%'
+		  AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id = m.id AND h.user_id = $1)
+		ORDER BY m.created_at DESC
+		LIMIT $3`, viewerID, q, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*Message
+	for rows.Next() {
+		m, err := scanMessage(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // Search 在某会话内按文本关键字检索（ILIKE），返回未撤回的文本消息（时间正序）。
 func (r *Repository) Search(ctx context.Context, convID, q string, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 50 {

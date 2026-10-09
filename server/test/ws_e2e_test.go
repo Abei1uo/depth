@@ -1578,3 +1578,44 @@ func TestSystemMessage(t *testing.T) {
 		t.Fatal("未发现成员加入的系统消息")
 	}
 }
+
+// TestGlobalSearch 验证：/search/messages 命中自己的消息，且不越出成员会话范围。
+func TestGlobalSearch(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	tokenA, _ := register(t, "gsA")
+	_, idB := register(t, "gsB")
+	tokenC, _ := register(t, "gsC")
+	convAB := createDirect(t, tokenA, idB)
+	convC := createDirect(t, tokenC, idB)
+
+	needle := "gneedle-" + randStr()
+	sendText(t, tokenA, convAB, "hello "+needle)
+	// 同关键字发给 B-C 会话（A 不在其中），用于验证成员范围隔离。
+	sendText(t, tokenC, convC, "hello "+needle+"-other")
+
+	var res struct {
+		Messages []struct {
+			ConversationID string `json:"conversation_id"`
+			Content        struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/search/messages?q="+needle, tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("search got %d", code)
+	}
+	var hit bool
+	for _, m := range res.Messages {
+		if m.ConversationID == convC {
+			t.Fatal("A 不应搜到 B-C 会话消息")
+		}
+		if strings.Contains(m.Content.Text, needle) {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatal("全局搜索未命中自己的消息")
+	}
+}

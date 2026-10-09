@@ -8,6 +8,7 @@ import '../../../core/ws/ws_client.dart';
 import '../../auth/application/session_controller.dart';
 import '../../auth/data/auth_repository.dart';
 import '../application/conversations_controller.dart';
+import 'global_search.dart';
 
 /// 会话列表时间：今天显 HH:mm，否则显 M/D。
 String _formatListTime(DateTime? t) {
@@ -41,6 +42,15 @@ class HomePage extends ConsumerWidget {
             icon: Icon(online ? Icons.circle : Icons.circle_outlined,
                 color: online ? Colors.green : Colors.grey),
             onPressed: null,
+          ),
+          IconButton(
+            tooltip: '搜索',
+            icon: const Icon(Icons.search),
+            onPressed: () => showModalBottomSheet<void>(
+              context: context,
+              isScrollControlled: true,
+              builder: (_) => const GlobalSearchSheet(),
+            ),
           ),
           IconButton(
             tooltip: '个人资料',

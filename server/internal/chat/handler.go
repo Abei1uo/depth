@@ -119,6 +119,23 @@ func (h *Handler) Search(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"messages": msgs})
 }
 
+// SearchMessages 处理 GET /api/v1/search/messages?q=&limit= —— 跨会话的全局消息检索。
+func (h *Handler) SearchMessages(c *gin.Context) {
+	q := c.Query("q")
+	limit := 50
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	uid := middleware.CtxUserID(c)
+	msgs, err := h.msgSvc.SearchGlobal(c.Request.Context(), uid, q, limit)
+	if err != nil {
+		slog.Error("global search failed", "user", uid, "q", q, "err", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": msgs})
+}
+
 // Get 处理 GET /api/v1/conversations/:id —— 返回会话详情与成员。
 func (h *Handler) Get(c *gin.Context) {
 	convID := c.Param("id")
@@ -143,6 +160,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/conversations/:id", h.Get)
 	rg.GET("/conversations/:id/messages", h.Messages)
 	rg.GET("/conversations/:id/messages/search", h.Search)
+	rg.GET("/search/messages", h.SearchMessages)
 
 	rg.POST("/conversations/:id/rename", h.Rename)
 	rg.POST("/conversations/:id/announcement", h.SetAnnouncement)

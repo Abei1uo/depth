@@ -147,6 +147,22 @@ class ChatRepository {
     }
   }
 
+  /// GET /api/v1/search/messages?q=&limit= —— 跨会话的全局消息检索。
+  Future<List<ChatMessage>> searchAll(String q, {int limit = 50}) async {
+    try {
+      final resp = await _api.get<Map<String, dynamic>>(
+        '/search/messages',
+        query: <String, dynamic>{'q': q, 'limit': limit},
+      );
+      final list = resp.data?['messages'] as List<dynamic>? ?? const [];
+      return list
+          .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
   /// POST /api/v1/media（multipart）——上传一个文件，返回媒体登记（含下载 url）。
   Future<MediaUpload> uploadMedia(File file, {String? name}) async {
     try {

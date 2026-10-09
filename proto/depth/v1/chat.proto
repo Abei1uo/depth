@@ -69,6 +69,17 @@ message SetAnnouncementRequest {
   string announcement = 2; // <=512
 }
 
+// SearchMessagesRequest 跨会话全局消息检索。
+message SearchMessagesRequest {
+  string q = 1;     // 关键字
+  int32 limit = 2;  // 默认 50，最大 50
+}
+
+// SearchMessagesResponse 命中的消息（时间倒序）。
+message SearchMessagesResponse {
+  repeated Message messages = 1;
+}
+
 // ChatService 会话与历史消息接口。
 service ChatService {
   rpc CreateDirect(CreateDirectRequest) returns (ConversationIdResponse);
@@ -76,4 +87,5 @@ service ChatService {
   rpc ListConversations(google.protobuf.Empty) returns (ListConversationsResponse);
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
   rpc SetAnnouncement(SetAnnouncementRequest) returns (google.protobuf.Empty);
+  rpc SearchMessages(SearchMessagesRequest) returns (SearchMessagesResponse);
 }
