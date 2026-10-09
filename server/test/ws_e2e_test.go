@@ -1780,3 +1780,62 @@ func TestPinnedMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestMentionAll 验证：群内 mention_all 消息令他人会话出现提及徒标，发送者自己则无。
+func TestMentionAll(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tokenA, _ := register(t, "maA")
+	tokenB, idB := register(t, "maB")
+	var grp struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/group", tokenA,
+		map[string]any{"name": "@群", "member_ids": []string{idB}}, &grp); code != http.StatusOK {
+		t.Fatalf("create group got %d", code)
+	}
+	conv := grp.ConversationID
+	wsA, wsB := wsDial(t, ctx, tokenA), wsDial(t, ctx, tokenB)
+	defer wsA.CloseNow()
+	defer wsB.CloseNow()
+	time.Sleep(400 * time.Millisecond)
+
+	sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "大家好 @所有人", "mention_all": true})
+	got := awaitPayload(t, wsB, func(p map[string]any) bool {
+		c, _ := p["content"].(map[string]any)
+		return c["mention_all"] == true
+	}, 5*time.Second)
+	if got == nil {
+		t.Fatal("B 未收到 mention_all 消息")
+	}
+
+	var resp struct {
+		Conversations []struct {
+			ID        string `json:"id"`
+			MentionMe bool   `json:"mention_me"`
+		} `json:"conversations"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations", tokenB, nil, &resp); code != http.StatusOK {
+		t.Fatalf("list convs B got %d", code)
+	}
+	var bFlag bool
+	for _, c := range resp.Conversations {
+		if c.ID == conv {
+			bFlag = c.MentionMe
+		}
+	}
+	if !bFlag {
+		t.Fatal("B 会话应有提及徒标")
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations", tokenA, nil, &resp); code != http.StatusOK {
+		t.Fatalf("list convs A got %d", code)
+	}
+	for _, c := range resp.Conversations {
+		if c.ID == conv && c.MentionMe {
+			t.Fatal("发送者 A 不应出现提及徒标")
+		}
+	}
+}

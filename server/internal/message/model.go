@@ -28,6 +28,8 @@ type Content struct {
 	ReplyTo *ReplyInfo `json:"reply_to,omitempty"`
 	// Mentions 为被 @ 的成员用户 ID 列表。
 	Mentions []string `json:"mentions,omitempty"`
+	// MentionAll 为真表示群内 @全体成员（驱动未读提及徒章）。
+	MentionAll bool `json:"mention_all,omitempty"`
 	// Reactions 为表情回应：emoji ->  reacted 用户 ID 列表（随 content JSONB 存储）。
 	Reactions map[string][]string `json:"reactions,omitempty"`
 	// Pinned 为真表示该消息被会话成员置顶（随 content JSONB 存储，无需新列）。

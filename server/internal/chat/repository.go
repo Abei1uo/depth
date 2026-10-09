@@ -283,12 +283,18 @@ func (r *Repository) ListForUser(ctx context.Context, userID string) ([]*Convers
 		         ELSE COALESCE(lm.text,'')
 		       END AS preview,
 		       COALESCE(lm.created_at, c.last_msg_at) AS last_at,
-		       COALESCE(lm.content->'mentions' @> jsonb_build_array($1::text), false) AS mention_me
+		       COALESCE(
+		         (lm.sender_id <> $1) AND (
+		           (lm.content -> 'mentions' @> jsonb_build_array($1::text))
+		           OR (lm.content ->> 'mention_all' = 'true')
+		         ),
+		         false) AS mention_me
 		FROM conversations c
 		JOIN conversation_members m ON m.conversation_id = c.id
 		LEFT JOIN conversation_reads r ON r.conversation_id = c.id AND r.user_id = m.user_id
 				LEFT JOIN LATERAL (
 				  SELECT msg2.id, msg2.type, msg2.recalled, msg2.created_at,
+				         msg2.sender_id,
 				         msg2.content->>'text' AS text, msg2.content AS content
 				  FROM messages msg2
 				  WHERE msg2.conversation_id = c.id

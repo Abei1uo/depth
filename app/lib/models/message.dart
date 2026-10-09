@@ -45,6 +45,7 @@ class MessageContent {
     this.mentions = const <String>[],
     this.reactions = const <String, List<String>>{},
     this.pinned = false,
+    this.mentionAll = false,
   });
 
   final int type;
@@ -57,6 +58,7 @@ class MessageContent {
   final List<String> mentions;
   final Map<String, List<String>> reactions; // emoji -> 已回应成员 ID 列表
   final bool pinned; // 是否被会话成员置顶
+  final bool mentionAll; // 群内 @全体成员
 
   factory MessageContent.fromJson(Map<String, dynamic> json) => MessageContent(
         type: (json['type'] as num? ?? 0).toInt(),
@@ -71,6 +73,7 @@ class MessageContent {
         mentions: (json['mentions'] as List?)?.cast<String>() ?? const <String>[],
         reactions: _parseReactions(json['reactions']),
         pinned: json['pinned'] as bool? ?? false,
+        mentionAll: json['mention_all'] as bool? ?? false,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -84,6 +87,7 @@ class MessageContent {
         if (mentions.isNotEmpty) 'mentions': mentions,
         if (reactions.isNotEmpty) 'reactions': reactions,
         if (pinned) 'pinned': pinned,
+        if (mentionAll) 'mention_all': mentionAll,
       };
 
   /// 按需返回副本（用于本地切换置顶等就地更新）。
@@ -91,6 +95,7 @@ class MessageContent {
     int? type,
     String? text,
     bool? pinned,
+    bool? mentionAll,
   }) =>
       MessageContent(
         type: type ?? this.type,
@@ -103,6 +108,7 @@ class MessageContent {
         mentions: mentions,
         reactions: reactions,
         pinned: pinned ?? this.pinned,
+        mentionAll: mentionAll ?? this.mentionAll,
       );
 
   factory MessageContent.text(String value) =>

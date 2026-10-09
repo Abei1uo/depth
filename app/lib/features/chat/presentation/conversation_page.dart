@@ -58,6 +58,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   String? _error;
   ReplyInfo? _replyTo; // 正在引用回复的目标
   final List<String> _mentions = <String>[]; // 当前待发送的 @ 成员 ID
+  bool _mentionAll = false; // 下一条是否 @全体成员（仅群）
   static const Duration _sendTimeout = Duration(seconds: 15);
   static const List<String> _reactionEmojis = <String>['👍', '❤️', '😂', '😮', '😢', '🎉'];
   final Map<String, Timer> _ackTimers = <String, Timer>{}; // clientMsgId -> 超时计时
@@ -216,6 +217,8 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       // 详情拉取失败不阻断聊天。
     }
   }
+
+  bool get _isGroup => _detail?.conversation.isGroup ?? false;
 
   String get _titleText {
     final d = _detail;
@@ -710,6 +713,8 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
 
   /// 发送一条内容（文本或媒体）：合入当前引用/@，走 WS + 本地乐观上屏。
   void _sendContent(MessageContent content) {
+    final mentionAll = _isGroup &&
+        (_mentionAll || content.text.contains('@所有人'));
     final composed = MessageContent(
       type: content.type,
       text: content.text,
@@ -719,11 +724,13 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       duration: content.duration,
       replyTo: _replyTo,
       mentions: List<String>.from(_mentions),
+      mentionAll: mentionAll,
     );
     _sendComposed(composed);
     setState(() {
       _replyTo = null;
       _mentions.clear();
+      _mentionAll = false;
     });
   }
 
@@ -742,6 +749,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       duration: composed.duration,
       replyTo: composed.replyTo,
       mentions: List<String>.from(composed.mentions),
+      mentionAll: composed.mentionAll,
     );
     ref.read(wsClientProvider).send(WsEnvelope(
           type: WsEvents.sendMessage,
@@ -1452,6 +1460,14 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
             icon: const Icon(Icons.people_outline),
             onPressed: _detail == null ? null : _showMembers,
           ),
+          if (_isGroup)
+            IconButton(
+              tooltip: _mentionAll ? '取消 @全体' : '@全体',
+              icon: Icon(_mentionAll
+                  ? Icons.campaign
+                  : Icons.campaign_outlined),
+              onPressed: () => setState(() => _mentionAll = !_mentionAll),
+            ),
         ],
       ),
       body: _loading
@@ -1635,6 +1651,11 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                         preview:
                             '${_memberName(_replyTo!.senderId)}: ${_replyTo!.text}',
                         onCancel: () => setState(() => _replyTo = null),
+                      ),
+                    if (_isGroup && _mentionAll)
+                      _ReplyBanner(
+                        preview: '下一条将以「@全体」发送',
+                        onCancel: () => setState(() => _mentionAll = false),
                       ),
                     _InputBar(
                         controller: _input,
