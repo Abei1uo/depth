@@ -210,6 +210,42 @@ func (r *Repository) UpdateReactions(ctx context.Context, id string, reactions m
 	return err
 }
 
+// SetPinned 设置消息的置顶标志（写入 content.pinned JSONB）。
+func (r *Repository) SetPinned(ctx context.Context, id string, on bool) error {
+	val := "false"
+	if on {
+		val = "true"
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE messages SET content = jsonb_set(content, '{pinned}', $2::jsonb)
+		WHERE id = $1`, id, val)
+	return err
+}
+
+// ListPinned 返回某会话内未被撤回的置顶消息（seq 升序）。
+func (r *Repository) ListPinned(ctx context.Context, convID string) ([]*Message, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+msgColumns+`
+		FROM messages
+		WHERE conversation_id = $1 AND recalled = false
+		  AND content ->> 'pinned' = 'true'
+		ORDER BY seq ASC`, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*Message
+	for rows.Next() {
+		m, err := scanMessage(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // SearchGlobal 跨 viewer 所在全部会话检索文本消息（排除本地已删/已撤回/非文本），时间倒序。
 func (r *Repository) SearchGlobal(ctx context.Context, viewerID, q string, limit int) ([]*Message, error) {
 	if limit <= 0 || limit > 50 {

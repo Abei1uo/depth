@@ -172,6 +172,20 @@ class ChatRepository {
     }
   }
 
+  /// GET /api/v1/conversations/:id/pinned —— 返回会话内置顶消息。
+  Future<List<ChatMessage>> pinned(String conversationId) async {
+    try {
+      final resp = await _api.get<Map<String, dynamic>>(
+          '/conversations/$conversationId/pinned');
+      final list = resp.data?['messages'] as List<dynamic>? ?? const [];
+      return list
+          .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } on DioException catch (e) {
+      throw ApiException.from(e);
+    }
+  }
+
   /// POST /api/v1/media（multipart）——上传一个文件，返回媒体登记（含下载 url）。
   Future<MediaUpload> uploadMedia(File file, {String? name}) async {
     try {

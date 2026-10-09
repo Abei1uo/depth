@@ -119,6 +119,18 @@ func (h *Handler) Search(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"messages": msgs})
 }
 
+// PinnedMessages 处理 GET /api/v1/conversations/:id/pinned —— 返回会话置顶消息。
+func (h *Handler) PinnedMessages(c *gin.Context) {
+	convID := c.Param("id")
+	msgs, err := h.msgSvc.Pinned(c.Request.Context(), convID)
+	if err != nil {
+		slog.Error("list pinned failed", "conv", convID, "err", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取置顶消息失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": msgs})
+}
+
 // SearchMessages 处理 GET /api/v1/search/messages?q=&limit= —— 跨会话的全局消息检索。
 func (h *Handler) SearchMessages(c *gin.Context) {
 	q := c.Query("q")
@@ -160,6 +172,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/conversations/:id", h.Get)
 	rg.GET("/conversations/:id/messages", h.Messages)
 	rg.GET("/conversations/:id/messages/search", h.Search)
+	rg.GET("/conversations/:id/pinned", h.PinnedMessages)
 	rg.GET("/search/messages", h.SearchMessages)
 
 	rg.POST("/conversations/:id/rename", h.Rename)

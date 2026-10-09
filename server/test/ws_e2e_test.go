@@ -1710,3 +1710,73 @@ func TestGroupRole(t *testing.T) {
 		t.Fatalf("回转让角色错误 A=%d B=%d", r[idA], r[idB])
 	}
 }
+
+// TestPinnedMessage 验证：pin_message 切换置顶，广播 message_update，/pinned 列表同步。
+func TestPinnedMessage(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tokenA, _ := register(t, "pinA")
+	tokenB, idB := register(t, "pinB")
+	conv := createDirect(t, tokenA, idB)
+	wsA, wsB := wsDial(t, ctx, tokenA), wsDial(t, ctx, tokenB)
+	defer wsA.CloseNow()
+	defer wsB.CloseNow()
+	time.Sleep(400 * time.Millisecond)
+
+	sid := sendContentVia(t, wsA, conv, map[string]any{"type": 0, "text": "pin-target-" + randStr()})
+	sendEnvelope(t, wsA, "pin_message", map[string]any{
+		"conversation_id": conv, "server_msg_id": sid, "on": true,
+	})
+	upd := awaitPayload(t, wsB, func(p map[string]any) bool {
+		if p["server_msg_id"] != sid {
+			return false
+		}
+		c, _ := p["content"].(map[string]any)
+		return c["pinned"] == true
+	}, 5*time.Second)
+	if upd == nil {
+		t.Fatal("未收到含 pinned 的 message_update")
+	}
+
+	var res struct {
+		Messages []struct {
+			ID string `json:"server_msg_id"`
+		} `json:"messages"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+conv+"/pinned", tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("pinned got %d", code)
+	}
+	var found bool
+	for _, m := range res.Messages {
+		if m.ID == sid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("/pinned 未返回置顶消息")
+	}
+
+	// 取消置顶。
+	sendEnvelope(t, wsA, "pin_message", map[string]any{
+		"conversation_id": conv, "server_msg_id": sid, "on": false,
+	})
+	awaitPayload(t, wsB, func(p map[string]any) bool {
+		if p["server_msg_id"] != sid {
+			return false
+		}
+		c, _ := p["content"].(map[string]any)
+		return c["pinned"] == false || c["pinned"] == nil
+	}, 5*time.Second)
+	res.Messages = nil
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+conv+"/pinned", tokenA, nil, &res); code != http.StatusOK {
+		t.Fatalf("pinned2 got %d", code)
+	}
+	for _, m := range res.Messages {
+		if m.ID == sid {
+			t.Fatal("取消置顶后仍在 /pinned")
+		}
+	}
+}

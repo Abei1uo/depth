@@ -190,6 +190,7 @@ var (
 	ErrNotEditable  = errors.New("该消息不可编辑")
 	ErrEmptyText    = errors.New("内容不能为空")
 	ErrEmptyEmoji   = errors.New("表情不能为空")
+	ErrNotMember    = errors.New("非该会话成员")
 )
 
 // Recall 撤回一条自己发送且在窗口内的消息：清空正文并广播更新。
@@ -299,6 +300,35 @@ func (s *Service) React(ctx context.Context, userID, msgID, emoji string, on boo
 	m.Content.Reactions = reactions
 	s.broadcastUpdate(ctx, m)
 	return m, nil
+}
+
+// Pin 切换一条消息的置顶状态（仅会话成员），落库后广播 message_update。
+func (s *Service) Pin(ctx context.Context, userID, msgID string, on bool) (*Message, error) {
+	m, err := s.repo.GetByID(ctx, msgID)
+	if err != nil {
+		return nil, err
+	}
+	if m.Recalled {
+		return nil, ErrNotEditable
+	}
+	members, err := s.chat.Members(ctx, m.ConversationID)
+	if err != nil {
+		return nil, err
+	}
+	if !containsStr(members, userID) {
+		return nil, ErrNotMember
+	}
+	if err := s.repo.SetPinned(ctx, msgID, on); err != nil {
+		return nil, err
+	}
+	m.Content.Pinned = on
+	s.broadcastUpdate(ctx, m)
+	return m, nil
+}
+
+// Pinned 返回会话内置顶消息（seq 升序）。
+func (s *Service) Pinned(ctx context.Context, convID string) ([]*Message, error) {
+	return s.repo.ListPinned(ctx, convID)
 }
 
 // AppendSystem 向会话追加一条系统消息（type=4）并广播给全体成员。

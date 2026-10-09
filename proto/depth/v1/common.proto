@@ -33,6 +33,7 @@ message MessageContent {
   repeated string mentions = 7; // 被 @ 的成员用户 ID
   int64 duration = 8;         // 语音消息时长（秒）
   map<string, UserList> reactions = 9; // emoji -> 已回应的用户 ID 列表
+  bool pinned = 10;           // 是否被会话成员置顶
 }
 
 // UserList 一组用户 ID（用于表示表情回应的响应者）。

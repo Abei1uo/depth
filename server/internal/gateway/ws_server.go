@@ -120,6 +120,11 @@ func (s *WSServer) dispatch(ctx context.Context, client *ws.Client, env *ws.Enve
 			return nil, errors.New("消息服务尚未就绪")
 		}
 		return s.handleReact(ctx, client, env)
+	case ws.EventPin:
+		if s.msgSvc == nil {
+			return nil, errors.New("消息服务尚未就绪")
+		}
+		return s.handlePin(ctx, client, env)
 	default:
 		return nil, errors.New("未知事件类型: " + env.Type)
 	}
@@ -179,6 +184,13 @@ func (s *WSServer) handleMarkRead(ctx context.Context, client *ws.Client, env *w
 	if err := s.chatRead.MarkRead(ctx, client.UserID(), req.ConversationID, req.MaxSeq); err != nil {
 		s.log.Warn("mark_read failed", "err", err.Error())
 		return nil, err
+	}
+	// 向当前用户的其他设备同步已读游标（多端未读角标一致）。
+	if data, err := ws.Encode(ws.EventReadSync, gin.H{
+		"conversation_id": req.ConversationID,
+		"max_seq":         req.MaxSeq,
+	}); err == nil {
+		s.hub.SendToUser(client.UserID(), data)
 	}
 	// 向同会话其他成员广播已读游标，供发送方展示“已读”回执。
 	if s.msgSvc != nil {
@@ -332,6 +344,25 @@ func (s *WSServer) handleReact(ctx context.Context, client *ws.Client, env *ws.E
 		return nil, errors.New("react_message 负载格式错误")
 	}
 	if _, err := s.msgSvc.React(ctx, client.UserID(), req.ServerMsgID, req.Emoji, req.On); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// handlePin 处理上行 pin_message：切换消息置顶，服务会广播 message_update。
+func (s *WSServer) handlePin(ctx context.Context, client *ws.Client, env *ws.Envelope) ([]byte, error) {
+	if s.msgSvc == nil {
+		return nil, errors.New("消息服务尚未就绪")
+	}
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		ServerMsgID    string `json:"server_msg_id"`
+		On             bool   `json:"on"`
+	}
+	if err := json.Unmarshal(env.Payload, &req); err != nil || req.ServerMsgID == "" {
+		return nil, errors.New("pin_message 负载格式错误")
+	}
+	if _, err := s.msgSvc.Pin(ctx, client.UserID(), req.ServerMsgID, req.On); err != nil {
 		return nil, err
 	}
 	return nil, nil

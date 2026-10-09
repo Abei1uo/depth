@@ -44,6 +44,7 @@ class MessageContent {
     this.replyTo,
     this.mentions = const <String>[],
     this.reactions = const <String, List<String>>{},
+    this.pinned = false,
   });
 
   final int type;
@@ -55,6 +56,7 @@ class MessageContent {
   final ReplyInfo? replyTo;
   final List<String> mentions;
   final Map<String, List<String>> reactions; // emoji -> 已回应成员 ID 列表
+  final bool pinned; // 是否被会话成员置顶
 
   factory MessageContent.fromJson(Map<String, dynamic> json) => MessageContent(
         type: (json['type'] as num? ?? 0).toInt(),
@@ -68,6 +70,7 @@ class MessageContent {
             : null,
         mentions: (json['mentions'] as List?)?.cast<String>() ?? const <String>[],
         reactions: _parseReactions(json['reactions']),
+        pinned: json['pinned'] as bool? ?? false,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -80,7 +83,27 @@ class MessageContent {
         if (replyTo != null) 'reply_to': replyTo!.toJson(),
         if (mentions.isNotEmpty) 'mentions': mentions,
         if (reactions.isNotEmpty) 'reactions': reactions,
+        if (pinned) 'pinned': pinned,
       };
+
+  /// 按需返回副本（用于本地切换置顶等就地更新）。
+  MessageContent copyWith({
+    int? type,
+    String? text,
+    bool? pinned,
+  }) =>
+      MessageContent(
+        type: type ?? this.type,
+        text: text ?? this.text,
+        mediaUrl: mediaUrl,
+        thumbUrl: thumbUrl,
+        size: size,
+        duration: duration,
+        replyTo: replyTo,
+        mentions: mentions,
+        reactions: reactions,
+        pinned: pinned ?? this.pinned,
+      );
 
   factory MessageContent.text(String value) =>
       MessageContent(type: MessageType.text, text: value);
@@ -125,14 +148,15 @@ class ChatMessage {
   /// 本地发送状态：长时间未收到 ack 时置为失败（仅客户端，不参与序列化）。
   final bool sendFailed;
 
-  ChatMessage copyWith({String? serverMsgId, int? seq, bool? sendFailed}) =>
+  ChatMessage copyWith(
+          {String? serverMsgId, int? seq, bool? sendFailed, MessageContent? content}) =>
       ChatMessage(
         serverMsgId: serverMsgId ?? this.serverMsgId,
         clientMsgId: clientMsgId,
         conversationId: conversationId,
         senderId: senderId,
         seq: seq ?? this.seq,
-        content: content,
+        content: content ?? this.content,
         createdAt: createdAt,
         recalled: recalled,
         sendFailed: sendFailed ?? this.sendFailed,

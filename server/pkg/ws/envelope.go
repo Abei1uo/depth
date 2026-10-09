@@ -22,6 +22,7 @@ const (
 	EventEdit        = "edit_message"   // 编辑一条文本消息
 	EventDelete      = "delete_message" // 本地删除（仅对己隐藏）
 	EventReact       = "react_message"  // 表情回应（添加/取消）
+	EventPin         = "pin_message"    // 置顶/取消置顶一条消息
 )
 
 // 服务端 → 客户端 事件类型。
@@ -29,6 +30,7 @@ const (
 	EventNewMessage    = "new_message"
 	EventMsgAck        = "msg_ack"
 	EventMsgRead       = "msg_read"
+	EventReadSync      = "read_sync"      // 同一用户其他设备已读游标同步
 	EventMessageUpdate = "message_update" // 撤回/编辑后的就地更新
 	EventPresence      = "presence_update"
 	EventError         = "error"

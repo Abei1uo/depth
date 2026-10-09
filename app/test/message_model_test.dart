@@ -21,6 +21,19 @@ void main() {
       expect(back.mentions, ['u1', 'u2']);
     });
 
+    test('MessageContent pinned 序列化与 copyWith', () {
+      const plain = MessageContent(type: MessageType.text, text: 'x');
+      expect(plain.toJson().containsKey('pinned'), false);
+
+      const pinned = MessageContent(type: MessageType.text, text: 'x', pinned: true);
+      expect(pinned.toJson()['pinned'], true);
+      expect(MessageContent.fromJson(pinned.toJson()).pinned, true);
+
+      final toggled = plain.copyWith(pinned: true);
+      expect(toggled.pinned, true);
+      expect(toggled.text, 'x');
+    });
+
     test('空 reply/mentions 不出现在 JSON 中', () {
       const c = MessageContent(type: MessageType.text, text: 'plain');
       final json = c.toJson();

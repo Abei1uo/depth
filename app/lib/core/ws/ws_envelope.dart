@@ -35,11 +35,13 @@ class WsEvents {
   static const String editMessage = 'edit_message';
   static const String deleteMessage = 'delete_message';
   static const String reactMessage = 'react_message';
+  static const String pinMessage = 'pin_message';
 
   // 下行：服务端 -> 客户端
   static const String newMessage = 'new_message';
   static const String msgAck = 'msg_ack';
   static const String msgRead = 'msg_read';
+  static const String readSync = 'read_sync';
   static const String messageUpdate = 'message_update';
   static const String presenceUpdate = 'presence_update';
   static const String syncResult = 'sync_result';

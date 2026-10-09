@@ -30,6 +30,8 @@ type Content struct {
 	Mentions []string `json:"mentions,omitempty"`
 	// Reactions 为表情回应：emoji ->  reacted 用户 ID 列表（随 content JSONB 存储）。
 	Reactions map[string][]string `json:"reactions,omitempty"`
+	// Pinned 为真表示该消息被会话成员置顶（随 content JSONB 存储，无需新列）。
+	Pinned bool `json:"pinned,omitempty"`
 }
 
 // ReplyInfo 是被引用消息的快照（仅用于展示摘要，不保证源消息仍存在）。

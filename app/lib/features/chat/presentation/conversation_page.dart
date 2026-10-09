@@ -41,6 +41,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
   final _random = Random();
 
   final List<ChatMessage> _messages = <ChatMessage>[];
+  List<ChatMessage> _pinned = <ChatMessage>[]; // 置顶消息（用于顶部横幅）
   bool _loading = true;
   bool _online = true;
   int _lastSeq = 0; // 本会话已知最大 seq，用于断线重连补拉
@@ -78,6 +79,7 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
     _conversations = ref.read(conversationsProvider.notifier);
     _loadHistory();
     _loadDetail();
+    _loadPinned();
     _initDraft();
     _scroll.addListener(_onScroll);
     final client = ref.read(wsClientProvider);
@@ -996,9 +998,85 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
 
   /// 按 server_msg_id 就地替换一条消息（撤回/编辑的本地乐观更新）。
   void _replaceMessage(ChatMessage updated) {
-    final idx = _messages.indexWhere((x) =>
-        updated.serverMsgId.isNotEmpty && x.serverMsgId == updated.serverMsgId);
-    if (idx >= 0) setState(() => _messages[idx] = updated);
+    setState(() {
+      final idx = _messages.indexWhere((x) =>
+          updated.serverMsgId.isNotEmpty && x.serverMsgId == updated.serverMsgId);
+      if (idx >= 0) _messages[idx] = updated;
+      // 同步置顶横幅（跨设备）。
+      _pinned.removeWhere((p) => p.serverMsgId == updated.serverMsgId);
+      if (updated.content.pinned && !updated.recalled) {
+        _pinned
+          ..add(updated)
+          ..sort((a, b) => a.seq.compareTo(b.seq));
+      }
+    });
+  }
+
+  /// 拉取会话置顶消息（覆盖未在已加载窗口内的旧置顶）。
+  Future<void> _loadPinned() async {
+    try {
+      final list =
+          await ref.read(chatRepositoryProvider).pinned(widget.conversationId);
+      if (!mounted) return;
+      setState(() => _pinned = list);
+    } catch (_) {
+      // 拉取失败不阻断聊天。
+    }
+  }
+
+  /// 切换某条消息的置顶：下发 pin_message + 乐观更新本地与横幅。
+  void _pinMessage(ChatMessage m, bool on) {
+    if (m.serverMsgId.isEmpty) return;
+    ref.read(wsClientProvider).send(WsEnvelope(
+          type: WsEvents.pinMessage,
+          payload: <String, dynamic>{
+            'conversation_id': widget.conversationId,
+            'server_msg_id': m.serverMsgId,
+            'on': on,
+          },
+        ));
+    setState(() {
+      final idx = _messages.indexWhere((x) => x.serverMsgId == m.serverMsgId);
+      if (idx >= 0) {
+        _messages[idx] = _messages[idx]
+            .copyWith(content: _messages[idx].content.copyWith(pinned: on));
+      }
+      _pinned.removeWhere((p) => p.serverMsgId == m.serverMsgId);
+      if (on) {
+        _pinned
+          ..add(idx >= 0 ? _messages[idx] : m)
+          ..sort((a, b) => a.seq.compareTo(b.seq));
+      }
+    });
+  }
+
+  /// 置顶横幅点击：单条直接跳转，多条先选择。
+  void _jumpToPinned() {
+    if (_pinned.length == 1) {
+      _jumpToQuote(_pinned.first.serverMsgId);
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            for (final p in _pinned.reversed)
+              ListTile(
+                leading: const Icon(Icons.push_pin, size: 18),
+                title: Text(
+                    p.content.text.isEmpty ? '[消息]' : p.content.text,
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _jumpToQuote(p.serverMsgId);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 弹出表情选取，选中后切换对该消息的回应（未选则取消）。
@@ -1272,6 +1350,19 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                   _pickReaction(m);
                 },
               ),
+            if (m.serverMsgId.isNotEmpty &&
+                !m.recalled &&
+                m.content.type != MessageType.system)
+              ListTile(
+                leading: Icon(m.content.pinned
+                    ? Icons.push_pin
+                    : Icons.push_pin_outlined),
+                title: Text(m.content.pinned ? '取消置顶' : '置顶'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _pinMessage(m, !m.content.pinned);
+                },
+              ),
             if (canAct && m.content.type == MessageType.text)
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
@@ -1400,6 +1491,31 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                 ),
                               ),
                             ],
+                          ),
+                        ),
+                      ),
+                    if (_pinned.isNotEmpty)
+                      Material(
+                        color:
+                            Theme.of(context).colorScheme.surfaceContainerHighest,
+                        child: InkWell(
+                          onTap: _jumpToPinned,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.push_pin, size: 16),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    '置顶 ${_pinned.length} 条：${_pinned.last.content.text.isEmpty ? "[消息]" : _pinned.last.content.text}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
