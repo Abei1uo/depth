@@ -1839,3 +1839,38 @@ func TestMentionAll(t *testing.T) {
 		}
 	}
 }
+
+// TestReadSyncMultiDevice 验证：同一用户一个设备 mark_read 后，其另一设备收到 read_sync。
+func TestReadSyncMultiDevice(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tokenA, _ := register(t, "rdA")
+	_, idB := register(t, "rdB")
+	conv := createDirect(t, tokenA, idB)
+
+	dial := func(dev string) *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, wsURL()+"?token="+tokenA+"&device_id="+dev, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	conn1, conn2 := dial("d1"), dial("d2")
+	defer conn1.CloseNow()
+	defer conn2.CloseNow()
+	time.Sleep(400 * time.Millisecond)
+
+	sendEnvelope(t, conn1, "mark_read", map[string]any{"conversation_id": conv, "max_seq": 5})
+	got := awaitPayload(t, conn2, func(p map[string]any) bool {
+		return p["conversation_id"] == conv && p["max_seq"] != nil && p["user_id"] == nil
+	}, 5*time.Second)
+	if got == nil {
+		t.Fatal("同用户另一设备未收到 read_sync")
+	}
+	if ms, _ := got["max_seq"].(float64); ms != 5 {
+		t.Fatalf("read_sync max_seq 期望 5，实际 %v", got["max_seq"])
+	}
+}

@@ -1,13 +1,21 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/ws/ws_client.dart';
+import '../../../core/ws/ws_envelope.dart';
 import '../../../models/conversation.dart';
 import '../data/chat_repository.dart';
 
 /// 会话列表：加载 + 新建单聊后刷新。
 class ConversationsController extends AsyncNotifier<List<Conversation>> {
   @override
-  Future<List<Conversation>> build() =>
-      ref.watch(chatRepositoryProvider).listConversations();
+  Future<List<Conversation>> build() async {
+    // 同一用户的其他设备已读会广播 read_sync：据此刷新会话列表的未读角标。
+    final sub = ref.read(wsClientProvider).incoming.listen((env) {
+      if (env.type == WsEvents.readSync) ref.invalidateSelf();
+    });
+    ref.onDispose(sub.cancel);
+    return ref.watch(chatRepositoryProvider).listConversations();
+  }
 
   /// 与 [peerId] 建立（或复用）单聊，返回会话 ID 并刷新列表。
   Future<String> startDirect(String peerId) async {
