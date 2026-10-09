@@ -309,6 +309,35 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
                                   label: Text('群主'),
                                   visualDensity: VisualDensity.compact),
                             ),
+                          if (m.role == 1)
+                            const Padding(
+                              padding: EdgeInsets.only(left: 6),
+                              child: Chip(
+                                  label: Text('管理员'),
+                                  visualDensity: VisualDensity.compact),
+                            ),
+                          if (isOwner && isGroup && m.userId != _meId && m.role != 2)
+                            PopupMenuButton<String>(
+                              tooltip: '管理',
+                              icon: const Icon(
+                                  Icons.admin_panel_settings_outlined),
+                              onSelected: (v) {
+                                Navigator.of(ctx).pop();
+                                _memberAction(v, d.conversation.id, m);
+                              },
+                              itemBuilder: (_) => <PopupMenuItem<String>>[
+                                const PopupMenuItem(
+                                    value: 'transfer', child: Text('转让群主')),
+                                if (m.role == 0)
+                                  const PopupMenuItem(
+                                      value: 'admin_on',
+                                      child: Text('设为管理员'))
+                                else
+                                  const PopupMenuItem(
+                                      value: 'admin_off',
+                                      child: Text('取消管理员')),
+                              ],
+                            ),
                           if (isOwner && isGroup && m.userId != _meId && m.role != 2)
                             IconButton(
                               tooltip: '移出',
@@ -396,6 +425,46 @@ class _ConversationPageState extends ConsumerState<ConversationPage> {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('保存失败：$e')));
+      }
+    }
+  }
+
+  /// 群成员管理动作：转让群主 / 设为管理员 / 取消管理员。
+  Future<void> _memberAction(String action, String convId, ChatMember m) async {
+    final repo = ref.read(chatRepositoryProvider);
+    try {
+      switch (action) {
+        case 'transfer':
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('转让群主'),
+              content: Text('确定将群主转让给「${m.displayName}」？你将变为普通成员。'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(false),
+                    child: const Text('取消')),
+                FilledButton(
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: const Text('确定')),
+              ],
+            ),
+          );
+          if (ok != true) return;
+          await repo.transferOwner(convId, m.userId);
+          break;
+        case 'admin_on':
+          await repo.setAdmin(convId, m.userId, true);
+          break;
+        case 'admin_off':
+          await repo.setAdmin(convId, m.userId, false);
+          break;
+      }
+      _loadDetail();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('操作失败：$e')));
       }
     }
   }

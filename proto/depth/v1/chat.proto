@@ -80,6 +80,19 @@ message SearchMessagesResponse {
   repeated Message messages = 1;
 }
 
+// TransferOwnerRequest 转让群主（仅群主）。
+message TransferOwnerRequest {
+  string conversation_id = 1;
+  string user_id = 2; // 新群主，须为成员
+}
+
+// SetMemberRoleRequest 设/取消管理员（仅群主，role 0/1）。
+message SetMemberRoleRequest {
+  string conversation_id = 1;
+  string user_id = 2;
+  int32 role = 3; // 0 普通 / 1 管理员
+}
+
 // ChatService 会话与历史消息接口。
 service ChatService {
   rpc CreateDirect(CreateDirectRequest) returns (ConversationIdResponse);
@@ -88,4 +101,6 @@ service ChatService {
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
   rpc SetAnnouncement(SetAnnouncementRequest) returns (google.protobuf.Empty);
   rpc SearchMessages(SearchMessagesRequest) returns (SearchMessagesResponse);
+  rpc TransferOwner(TransferOwnerRequest) returns (google.protobuf.Empty);
+  rpc SetMemberRole(SetMemberRoleRequest) returns (google.protobuf.Empty);
 }

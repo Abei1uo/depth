@@ -67,13 +67,22 @@ class ChatRepository {
       _postVoid('/conversations/$conversationId/announcement',
           {'announcement': text});
 
-  /// 加成员（仅群主）。
+  /// 加成员（群主或管理员）。
   Future<void> addMembers(String conversationId, List<String> userIds) =>
       _postVoid('/conversations/$conversationId/members/add', {'user_ids': userIds});
 
-  /// 踢成员（仅群主）。
+  /// 踢成员（群主或管理员）。
   Future<void> removeMember(String conversationId, String userId) =>
       _postVoid('/conversations/$conversationId/members/remove', {'user_id': userId});
+
+  /// 转让群主（仅群主）。
+  Future<void> transferOwner(String conversationId, String userId) =>
+      _postVoid('/conversations/$conversationId/transfer', {'user_id': userId});
+
+  /// 设/取消管理员（仅群主）。
+  Future<void> setAdmin(String conversationId, String userId, bool on) =>
+      _postVoid('/conversations/$conversationId/members/role',
+          {'user_id': userId, 'role': on ? 1 : 0});
 
   /// 退出群聊。
   Future<void> leave(String conversationId) =>

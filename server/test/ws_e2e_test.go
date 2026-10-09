@@ -1619,3 +1619,94 @@ func TestGlobalSearch(t *testing.T) {
 		t.Fatal("全局搜索未命中自己的消息")
 	}
 }
+
+// memberRoles 返回会话内 user_id -> role 映射。
+func memberRoles(t *testing.T, token, conv string) map[string]int {
+	t.Helper()
+	var d struct {
+		Members []struct {
+			UserID string `json:"user_id"`
+			Role   int    `json:"role"`
+		} `json:"members"`
+	}
+	if code := doJSON(t, http.MethodGet, "/api/v1/conversations/"+conv, token, nil, &d); code != http.StatusOK {
+		t.Fatalf("detail got %d", code)
+	}
+	out := map[string]int{}
+	for _, m := range d.Members {
+		out[m.UserID] = m.Role
+	}
+	return out
+}
+
+// TestGroupRole 验证：转让群主 / 设取消管理员 / 管理员可加人但不可改名。
+func TestGroupRole(t *testing.T) {
+	if _, err := http.Get(baseURL() + "/healthz"); err != nil {
+		t.Skipf("后端不可达(%s): %v", baseURL(), err)
+	}
+	tokenA, idA := register(t, "grA")
+	tokenB, idB := register(t, "grB")
+	tokenC, idC := register(t, "grC")
+	_, idD := register(t, "grD")
+
+	var g struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/group", tokenA,
+		map[string]any{"name": "角色群", "member_ids": []string{idB}}, &g); code != http.StatusOK {
+		t.Fatalf("create group got %d", code)
+	}
+	conv := g.ConversationID
+
+	// 1. A 转让给 B：B=2, A=0
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/transfer", tokenA,
+		map[string]any{"user_id": idB}, nil); code != http.StatusOK {
+		t.Fatalf("transfer got %d", code)
+	}
+	if r := memberRoles(t, tokenA, conv); r[idB] != 2 || r[idA] != 0 {
+		t.Fatalf("转让后角色错误 A=%d B=%d", r[idA], r[idB])
+	}
+	// 2. 原群主 A(现普通) 设管理员 -> 403
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/members/role", tokenA,
+		map[string]any{"user_id": idA, "role": 1}, nil); code != http.StatusForbidden {
+		t.Fatalf("非群主设管理员期望 403，实际 %d", code)
+	}
+	// 3. 新群主 B 加 C 并设为管理员
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/members/add", tokenB,
+		map[string]any{"user_ids": []string{idC}}, nil); code != http.StatusOK {
+		t.Fatalf("B add C got %d", code)
+	}
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/members/role", tokenB,
+		map[string]any{"user_id": idC, "role": 1}, nil); code != http.StatusOK {
+		t.Fatalf("setAdmin C got %d", code)
+	}
+	if r := memberRoles(t, tokenB, conv); r[idC] != 1 {
+		t.Fatalf("C 应为管理员，实际 %d", r[idC])
+	}
+	// 4. 管理员 C 可加成员 D
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/members/add", tokenC,
+		map[string]any{"user_ids": []string{idD}}, nil); code != http.StatusOK {
+		t.Fatalf("admin C add D got %d", code)
+	}
+	if _, n := detailNameCount(t, tokenB, conv); n != 4 {
+		t.Fatalf("管理员加人后期望 4 成员，实际 %d", n)
+	}
+	// 5. 管理员 C 改名 -> 403（仅群主）
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/rename", tokenC,
+		map[string]any{"name": "x"}, nil); code != http.StatusForbidden {
+		t.Fatalf("管理员改名期望 403，实际 %d", code)
+	}
+	// 6. 群主 B 不能改自己角色 -> 400
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/members/role", tokenB,
+		map[string]any{"user_id": idB, "role": 1}, nil); code != http.StatusBadRequest {
+		t.Fatalf("改群主角色期望 400，实际 %d", code)
+	}
+	// 7. 转让回 A
+	if code := doJSON(t, http.MethodPost, "/api/v1/conversations/"+conv+"/transfer", tokenB,
+		map[string]any{"user_id": idA}, nil); code != http.StatusOK {
+		t.Fatalf("transfer back got %d", code)
+	}
+	if r := memberRoles(t, tokenA, conv); r[idA] != 2 || r[idB] != 0 {
+		t.Fatalf("回转让角色错误 A=%d B=%d", r[idA], r[idB])
+	}
+}

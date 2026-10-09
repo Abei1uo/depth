@@ -164,6 +164,8 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 
 	rg.POST("/conversations/:id/rename", h.Rename)
 	rg.POST("/conversations/:id/announcement", h.SetAnnouncement)
+	rg.POST("/conversations/:id/transfer", h.TransferOwner)
+	rg.POST("/conversations/:id/members/role", h.SetAdmin)
 	rg.POST("/conversations/:id/members/add", h.AddMembers)
 	rg.POST("/conversations/:id/members/remove", h.RemoveMember)
 	rg.POST("/conversations/:id/leave", h.Leave)
@@ -175,7 +177,11 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 // respondConvErr 统一处理群管理错误：ErrForbidden 403，其余记日得 500。
 func respondConvErr(c *gin.Context, err error, fallback string) {
 	if errors.Is(err, ErrForbidden) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "需要群主权限"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "需要群主/管理员权限"})
+		return
+	}
+	if errors.Is(err, ErrNotMember) || errors.Is(err, ErrOwnerImmutable) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	slog.Error(fallback, "conv", c.Param("id"), "err", err.Error())
@@ -206,6 +212,15 @@ type muteReq struct {
 	Muted bool `json:"muted"`
 }
 
+type transferReq struct {
+	UserID string `json:"user_id" binding:"required,uuid"`
+}
+
+type setRoleReq struct {
+	UserID string `json:"user_id" binding:"required,uuid"`
+	Role   int16  `json:"role" binding:"oneof=0 1"`
+}
+
 // Rename 处理 POST /conversations/:id/rename。
 func (h *Handler) Rename(c *gin.Context) {
 	var req renameReq
@@ -230,6 +245,58 @@ func (h *Handler) SetAnnouncement(c *gin.Context) {
 	if err := h.repo.SetAnnouncement(c.Request.Context(), c.Param("id"), middleware.CtxUserID(c), req.Announcement); err != nil {
 		respondConvErr(c, err, "设置公告失败")
 		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// TransferOwner 处理 POST /conversations/:id/transfer —— 转让群主（仅群主）。
+func (h *Handler) TransferOwner(c *gin.Context) {
+	var req transferReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx := c.Request.Context()
+	convID := c.Param("id")
+	actor := middleware.CtxUserID(c)
+	if err := h.repo.TransferOwner(ctx, convID, actor, req.UserID); err != nil {
+		respondConvErr(c, err, "转让群主失败")
+		return
+	}
+	if h.msgSvc != nil {
+		if name, err := h.repo.DisplayName(ctx, req.UserID); err == nil {
+			if err := h.msgSvc.AppendSystem(ctx, convID, actor, fmt.Sprintf("「%s」成为群主", name)); err != nil {
+				slog.Warn("append transfer system message failed", "conv", convID, "err", err.Error())
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// SetAdmin 处理 POST /conversations/:id/members/role —— 设/取消管理员（仅群主，role 0/1）。
+func (h *Handler) SetAdmin(c *gin.Context) {
+	var req setRoleReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx := c.Request.Context()
+	convID := c.Param("id")
+	actor := middleware.CtxUserID(c)
+	if err := h.repo.SetMemberRole(ctx, convID, actor, req.UserID, req.Role); err != nil {
+		respondConvErr(c, err, "设置管理员失败")
+		return
+	}
+	if h.msgSvc != nil {
+		if name, err := h.repo.DisplayName(ctx, req.UserID); err == nil {
+			act := "被设为管理员"
+			if req.Role == 0 {
+				act = "被取消管理员"
+			}
+			if err := h.msgSvc.AppendSystem(ctx, convID, actor, fmt.Sprintf("「%s」%s", name, act)); err != nil {
+				slog.Warn("append role system message failed", "conv", convID, "err", err.Error())
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

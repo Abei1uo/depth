@@ -16,8 +16,12 @@ const (
 	TypeGroup  = 1 // 群聊
 )
 
-// ErrForbidden 表示缺少群主权限（HTTP 映射 403）。
-var ErrForbidden = errors.New("需要群主权限")
+// 群管理相关错误（HTTP 由 respondConvErr 统一映射）。
+var (
+	ErrForbidden      = errors.New("需要管理员权限")
+	ErrNotMember      = errors.New("目标不是群成员")
+	ErrOwnerImmutable = errors.New("不能修改群主角色")
+)
 
 // Conversation 是会话实体。
 type Conversation struct {
@@ -142,6 +146,92 @@ func (r *Repository) PeerMembers(ctx context.Context, userID string) ([]string, 
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// setRole 直接设置成员角色（0 普通 / 1 管理员 / 2 群主），不做权限校验。
+func (r *Repository) setRole(ctx context.Context, convID, userID string, role int16) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE conversation_members SET role = $3 WHERE conversation_id = $1 AND user_id = $2`,
+		convID, userID, role)
+	return err
+}
+
+// memberRole 返回某成员角色；非成员返回 -1。
+func (r *Repository) memberRole(ctx context.Context, convID, userID string) (int16, error) {
+	var role int16
+	err := r.pool.QueryRow(ctx,
+		`SELECT role FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`,
+		convID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return -1, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return role, nil
+}
+
+// isMember 判断用户是否为会话成员。
+func (r *Repository) isMember(ctx context.Context, convID, userID string) (bool, error) {
+	role, err := r.memberRole(ctx, convID, userID)
+	return role >= 0, err
+}
+
+// assertGroupAdmin 校验 userID 是该群的群主或管理员（role>=1）。
+func (r *Repository) assertGroupAdmin(ctx context.Context, convID, userID string) error {
+	var n int
+	if err := r.pool.QueryRow(ctx, `
+		SELECT count(*) FROM conversations c
+		JOIN conversation_members m ON m.conversation_id = c.id
+		WHERE c.id = $1 AND c.type = 1 AND m.user_id = $2 AND m.role >= 1`, convID, userID).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrForbidden
+	}
+	return nil
+}
+
+// TransferOwner 转让群主（仅群主）：新群主须为成员，原群主降为普通成员。
+func (r *Repository) TransferOwner(ctx context.Context, convID, actorID, targetID string) error {
+	if err := r.assertGroupOwner(ctx, convID, actorID); err != nil {
+		return err
+	}
+	if actorID == targetID {
+		return nil
+	}
+	ok, err := r.isMember(ctx, convID, targetID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotMember
+	}
+	if err := r.setRole(ctx, convID, targetID, 2); err != nil {
+		return err
+	}
+	return r.setRole(ctx, convID, actorID, 0)
+}
+
+// SetMemberRole 设/取消管理员（仅群主）；仅允许 0/1，且目标不能是群主。
+func (r *Repository) SetMemberRole(ctx context.Context, convID, actorID, targetID string, role int16) error {
+	if err := r.assertGroupOwner(ctx, convID, actorID); err != nil {
+		return err
+	}
+	if role != 0 && role != 1 {
+		return ErrForbidden
+	}
+	cur, err := r.memberRole(ctx, convID, targetID)
+	if err != nil {
+		return err
+	}
+	if cur < 0 {
+		return ErrNotMember
+	}
+	if cur == 2 {
+		return ErrOwnerImmutable
+	}
+	return r.setRole(ctx, convID, targetID, role)
 }
 
 // DisplayName 返回用户的展示名（昵称优先，回退用户名），用于系统消息文案。
@@ -308,9 +398,9 @@ func (r *Repository) SetAnnouncement(ctx context.Context, convID, byUserID, text
 	return err
 }
 
-// AddMembers 加成员（仅群主）；已存在则忽略。
+// AddMembers 加成员（群主或管理员）；已存在则忽略。
 func (r *Repository) AddMembers(ctx context.Context, convID, byUserID string, ids []string) error {
-	if err := r.assertGroupOwner(ctx, convID, byUserID); err != nil {
+	if err := r.assertGroupAdmin(ctx, convID, byUserID); err != nil {
 		return err
 	}
 	tx, err := r.pool.Begin(ctx)
@@ -328,9 +418,9 @@ func (r *Repository) AddMembers(ctx context.Context, convID, byUserID string, id
 	return tx.Commit(ctx)
 }
 
-// RemoveMember 踢成员（仅群主，不可踢群主）。
+// RemoveMember 踢成员（群主或管理员，不可踢群主）。
 func (r *Repository) RemoveMember(ctx context.Context, convID, byUserID, targetID string) error {
-	if err := r.assertGroupOwner(ctx, convID, byUserID); err != nil {
+	if err := r.assertGroupAdmin(ctx, convID, byUserID); err != nil {
 		return err
 	}
 	_, err := r.pool.Exec(ctx, `
