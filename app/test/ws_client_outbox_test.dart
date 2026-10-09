@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:depth_app/core/ws/ws_client.dart';
@@ -35,5 +37,39 @@ void main() {
     c.close();
     expect(c.pendingOutbox, 0);
     c.dispose();
+  });
+
+  test('离线队列落盘并可在新实例恢复补发', () async {
+    final dir = await Directory.systemTemp.createTemp('ws_outbox');
+    final c1 = WsClient()..useOutboxDir(dir);
+    c1.send(_env('x'));
+    c1.send(_env('y'));
+    await Future<void>.delayed(const Duration(milliseconds: 150)); // 等落盘
+    expect(c1.pendingOutbox, 2);
+
+    final c2 = WsClient()..useOutboxDir(dir);
+    await c2.restorePending();
+    expect(c2.pendingOutbox, 2);
+
+    c1.dispose();
+    c2.dispose();
+    await dir.delete(recursive: true);
+  });
+
+  test('close 后落盘被清空，新实例无可恢复', () async {
+    final dir = await Directory.systemTemp.createTemp('ws_outbox2');
+    final c = WsClient()..useOutboxDir(dir);
+    c.send(_env('a'));
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    c.close();
+    await Future<void>.delayed(const Duration(milliseconds: 150)); // 等删文件
+
+    final c2 = WsClient()..useOutboxDir(dir);
+    await c2.restorePending();
+    expect(c2.pendingOutbox, 0);
+
+    c.dispose();
+    c2.dispose();
+    await dir.delete(recursive: true);
   });
 }

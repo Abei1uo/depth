@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -30,10 +31,13 @@ class WsClient {
 
   static const List<int> _backoffSeconds = <int>[1, 2, 5, 10, 30];
 
-  /// 未连接时的待发队列（内存态，FIFO）。重连成功后按序补发。
-  /// 注意：App 进程被杀则丢失；持久化待发队列列入后续轮次。
+  /// 未连接时的待发队列（内存 + 可选落盘）。重连成功后按序补发。
+  /// 注入 _outboxDir 后，进程重启可经 restorePending 恢复并补发。
   static const int _maxOutbox = 200;
   final List<WsEnvelope> _outbox = <WsEnvelope>[];
+
+  /// 待发队列持久化目录（App 启动时注入；为 null 则仅内存态，如测试环境）。
+  Directory? _outboxDir;
 
   Stream<WsEnvelope> get incoming => _incoming.stream;
   Stream<bool> get status => _status.stream;
@@ -92,7 +96,7 @@ class WsClient {
     if (!_status.isClosed) _status.add(value);
   }
 
-  /// 发送一个信封；未连接则入队，待重连成功后补发（上限 [_maxOutbox]，满则丢弃最旧）。
+  /// 发送一个信封；未连接则入队（并尝试落盘），待重连成功后补发（上限 [_maxOutbox]，满则丢弃最旧）。
   void send(WsEnvelope envelope) {
     final channel = _channel;
     if (channel == null) {
@@ -100,9 +104,58 @@ class WsClient {
         _outbox.removeAt(0); // 超出上限，丢弃最旧一条
       }
       _outbox.add(envelope);
+      _persistOutbox();
       return;
     }
     channel.sink.add(envelope.encode());
+  }
+
+  /// 指定待发队列持久化目录。
+  void useOutboxDir(Directory dir) => _outboxDir = dir;
+
+  File get _outboxFile =>
+      File('${_outboxDir!.path}${Platform.pathSeparator}ws_outbox.json');
+
+  /// 从磁盘恢复上次进程退出前未发送的队列（重启后补发）。
+  Future<void> restorePending() async {
+    if (_outboxDir == null) return;
+    try {
+      final f = _outboxFile;
+      if (!await f.exists()) return;
+      final list =
+          (jsonDecode(await f.readAsString()) as List).cast<Map<String, dynamic>>();
+      for (final e in list) {
+        if (_outbox.length >= _maxOutbox) break;
+        _outbox.add(WsEnvelope(
+          type: e['type'] as String? ?? '',
+          payload: (e['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{},
+        ));
+      }
+    } catch (_) {
+      // 恢复失败忽略。
+    }
+  }
+
+  void _persistOutbox() {
+    if (_outboxDir == null) return;
+    unawaited(() async {
+      try {
+        final body = jsonEncode(_outbox
+            .map((e) => <String, dynamic>{'type': e.type, 'payload': e.payload})
+            .toList());
+        await _outboxFile.writeAsString(body);
+      } catch (_) {}
+    }());
+  }
+
+  void _clearPersisted() {
+    if (_outboxDir == null) return;
+    unawaited(() async {
+      try {
+        final f = _outboxFile;
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }());
   }
 
   /// 重连成功后补发队列中的信封。仍携带原 client_msg_id，服务端会幂等去重。
@@ -111,6 +164,7 @@ class WsClient {
     if (channel == null || _outbox.isEmpty) return;
     final pending = List<WsEnvelope>.of(_outbox);
     _outbox.clear();
+    _clearPersisted();
     for (final env in pending) {
       channel.sink.add(env.encode());
     }
@@ -124,6 +178,7 @@ class WsClient {
   void close() {
     _shouldReconnect = false;
     _outbox.clear();
+    _clearPersisted();
     _reconnectTimer?.cancel();
     _sub?.cancel();
     _sub = null;

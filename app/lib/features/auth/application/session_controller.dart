@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../../core/api/api_client.dart';
 import '../../../core/api/api_exception.dart';
@@ -92,7 +93,7 @@ class SessionController extends Notifier<AuthState> {
     state = state.copyWith(status: AuthStatus.authenticating, clearError: true);
     try {
       final session = await action();
-      _apply(session);
+      await _apply(session);
       return true;
     } on ApiException catch (e) {
       state = AuthState(status: AuthStatus.unauthenticated, error: e.message);
@@ -106,13 +107,25 @@ class SessionController extends Notifier<AuthState> {
     }
   }
 
-  void _apply(AuthSession session) {
+  Future<void> _apply(AuthSession session) async {
     _tokens.save(
       accessToken: session.accessToken,
       refreshToken: session.refreshToken,
     );
+    await _setupOutbox(restore: true);
     _ws.connect(AppConfig.wsBaseUrl, session.accessToken);
     state = AuthState(status: AuthStatus.authenticated, user: session.user);
+  }
+
+  /// 为 WebSocket 待发队列启用磁盘持久化（尽力而为）；restore=true 时恢复上次未发。
+  Future<void> _setupOutbox({required bool restore}) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      _ws.useOutboxDir(dir);
+      if (restore) await _ws.restorePending();
+    } catch (_) {
+      // 平台不支持时退回内存态。
+    }
   }
 
   /// 启动时尝试恢复会话：从安全存储取回令牌，若有效则拉取用户信息并连接 WS。
@@ -125,6 +138,7 @@ class SessionController extends Notifier<AuthState> {
     }
     try {
       final user = await _repo.me();
+      await _setupOutbox(restore: true);
       _ws.connect(AppConfig.wsBaseUrl, _tokens.accessToken!);
       state = AuthState(status: AuthStatus.authenticated, user: user);
     } catch (_) {
